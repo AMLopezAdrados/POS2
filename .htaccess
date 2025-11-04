@@ -1,0 +1,5 @@
+RewriteEngine On
+
+# 1) /accounting → /accounting/ (301)
+RewriteCond %{REQUEST_URI} ^/accounting$
+RewriteRule ^accounting$ /accounting/ [R=301,L]

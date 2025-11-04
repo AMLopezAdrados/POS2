@@ -1,0 +1,20 @@
+# Normalize line endings
+* text=auto eol=lf
+*.sh   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.php  text eol=lf
+*.json text eol=lf
+
+# Windows-specific
+accounting/** text eol=crlf
+
+# === Prevent merges from overwriting API data ===
+api/*.json merge=ours
+api/verkopen/* merge=ours
+api/backups/* merge=ours
+
+# Optional: make sure git always keeps local versions of event/stock data
+api/evenementen.json merge=ours
+api/voorraad.json merge=ours

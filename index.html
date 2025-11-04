@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SuperKaasTeller 5000</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+  <link rel="apple-touch-icon" href="/favicon.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="theme-color" content="#2A9626" />
+
+  <!-- Stijlen -->
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="favicon.png" />
+
+  <!-- Libraries -->
+  <script src="lib/chart.min.js"></script>
+  <script src="lib/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <!-- Logo preload -->
+  <script>
+    fetch('logo.png')
+      .then((res) => res.blob())
+      .then((blob) => {
+        const reader = new FileReader();
+        reader.onloadend = () => (window.olga_logo_base64 = reader.result);
+        reader.readAsDataURL(blob);
+      })
+      .catch(() => {});
+  </script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      background: #f4f5f7;
+      color: #333;
+    }
+    #app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #loadingText {
+      padding: 1rem;
+      margin: 0 auto;
+      width: min(640px, 100%);
+      text-align: center;
+      font-size: 1.2rem;
+      color: #194a1f;
+      background: rgba(255, 197, 0, 0.85);
+      border-radius: 12px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+      position: relative;
+      top: 1.5rem;
+      animation: slideDown 0.4s ease;
+    }
+    .fade-out {
+      animation: fadeOut 1s ease forwards;
+    }
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    @keyframes fadeOut {
+      from {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      to {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+    }
+    #loadingOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+      font-size: 2rem;
+      font-weight: bold;
+    }
+  </style>
+  <script>
+    (function () {
+      function toast(msg) {
+        const d = document.createElement('div');
+        d.textContent = msg;
+        Object.assign(d.style, {
+          position: 'fixed',
+          left: '8px',
+          right: '8px',
+          bottom: '8px',
+          background: '#300',
+          color: '#fff',
+          padding: '10px',
+          borderRadius: '8px',
+          zIndex: 99999,
+          opacity: 0.95,
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '12px',
+        });
+        document.body.appendChild(d);
+        setTimeout(() => d.remove(), 8000);
+      }
+      window.addEventListener('error', (e) => toast('JS error: ' + (e?.message || e)));
+      window.addEventListener('unhandledrejection', (e) => toast('Promise error: ' + (e.reason?.message || e.reason)));
+    })();
+  </script>
+</head>
+
+<body>
+  <div id="loadingOverlay">⏳ Laden...</div>
+  <div id="app">
+    <div id="loadingText"></div>
+  </div>
+
+  <script type="module">
+    const jokes = [
+      'Wat is groen en rijdt op de weg? Een bromkommer.',
+      'Hoe noem je een hond zonder poten? Hij komt toch niet.',
+      'Wat is wit en ontploft? Een boemkool.',
+      'Hoe stop je een olifant in de vriezer? Fant erin.',
+    ];
+    const loadingTextDiv = document.getElementById('loadingText');
+
+    const startAppModules = async () => {
+      try {
+        const { bootApp } = await import('/modules/1_sessiebeheer.js');
+        await bootApp();
+        import('/modules/autoRefresh.js');
+        import('/modules/5_eventbeheer.js');
+        import('/modules/6_beheerVoorraad.js');
+        import('/modules/7_beheerProducten.js');
+        import('/modules/9_eventdetails.js');
+        import('/modules/11_gebruikersbeheer.js');
+        import('/modules/13_email.js');
+        import('/modules/14_reisPlanning.js');
+        import('/modules/15_eventSchedule.js');
+        import('/modules/17_inzichten.js');
+        console.log('✅ Alle modules geladen & UI gestart');
+      } catch (err) {
+        console.error('❌ Fout bij laden modules:', err);
+        alert('Er ging iets mis bij het starten van de app. Zie console voor details.');
+      }
+    };
+
+    if (loadingTextDiv) {
+      loadingTextDiv.textContent = jokes[Math.floor(Math.random() * jokes.length)];
+      setTimeout(() => {
+        loadingTextDiv.classList.add('fade-out');
+        setTimeout(() => {
+          loadingTextDiv.remove();
+          startAppModules();
+        }, 1000);
+      }, 2800);
+    } else {
+      startAppModules();
+    }
+  </script>
+</body>
+</html>

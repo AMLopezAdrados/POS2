@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inloggen - Olga's Cheese</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    .login-container {
+      background: white;
+      padding: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      width: 300px;
+    }
+    input {
+      width: 100%;
+      padding: 0.5rem;
+      margin-bottom: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    button {
+      width: 100%;
+      padding: 0.5rem;
+      background: #2A9626;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+    .logo img {
+      max-width: 100px;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="logo">
+      <img src="/logo.png" alt="Olga's Cheese">
+    </div>
+    <input type="text" id="username" placeholder="Gebruikersnaam">
+    <input type="password" id="password" placeholder="Wachtwoord">
+    <button>Inloggen</button>
+  </div>
+
+  <!-- onderaan login.html, vervang <script>…</script> door dit -->
+<script type="module">
+  import { saveUser } from './0_login.js';
+
+  const API_BASE = window.API_BASE_URL || '/api';
+
+  async function login() {
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value.trim();
+    try {
+      const res = await fetch(`${API_BASE}/gebruikers.json`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Failed to load users');
+      const users = await res.json();
+      const user = users.find(u => u.username === username && u.password === password);
+      if (!user) throw new Error('Invalid credentials');
+      saveUser(user);
+      window.location.href = '/index.html';
+    } catch (e) {
+      alert('Ongeldige login. Probeer opnieuw.');
+    }
+  }
+
+  document.querySelector('button').addEventListener('click', login);
+</script>
+
+</body>
+</html>

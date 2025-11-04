@@ -1,0 +1,33 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs & temps
+*.log
+*.tmp
+*.swp
+
+# IDE
+.vscode/
+.idea/
+
+# Dependencies & builds
+node_modules/
+dist/
+build/
+.cache/
+
+# Environment files
+.env
+.env.*
+
+# === API DATA PROTECTION ===
+# Negeer alle JSON-data en verkoopbestanden, maar houd PHP-scripts bij
+/api/*.json
+/api/verkopen/
+/api/backups/
+/api/debug.log
+!/api/*.php
+
+# === Project folders that should be ignored ===
+accounting/

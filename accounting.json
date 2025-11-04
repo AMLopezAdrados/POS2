@@ -1,0 +1,105 @@
+{
+    "entries": [
+        {
+            "id": "omzet-099cf6b5-f89c-41fb-80d7-cf0aa15dd5ce-omzet-mhjkpknj-uxul43",
+            "date": "2025-11-02",
+            "accountId": "acct-event-income-eur",
+            "categoryId": "cat-event-income",
+            "amount": 357.56,
+            "direction": "DEBIT",
+            "currency": "EUR",
+            "note": "Dagomzet Stuttgart BX oktober 25",
+            "reference": "Stuttgart BX oktober 25 · 2025-11-02",
+            "meta": {
+                "type": "INCOME",
+                "source": "dagomzet",
+                "eventId": "099cf6b5-f89c-41fb-80d7-cf0aa15dd5ce",
+                "eventName": "Stuttgart BX oktober 25",
+                "paymentMethod": "DIRECT",
+                "omzetEntryId": "omzet-mhjkpknj-uxul43",
+                "eur": 357.56,
+                "usd": 401.75
+            },
+            "createdAt": "2025-11-03T20:09:12.655Z",
+            "updatedAt": "2025-11-03T20:09:12.655Z",
+            "pending": false
+        },
+        {
+            "id": "omzet-099cf6b5-f89c-41fb-80d7-cf0aa15dd5ce-omzet-mhjko8vg-p0bees",
+            "date": "2025-11-03",
+            "accountId": "acct-event-income-eur",
+            "categoryId": "cat-event-income",
+            "amount": 106.74,
+            "direction": "DEBIT",
+            "currency": "EUR",
+            "note": "Dagomzet Stuttgart BX oktober 25",
+            "reference": "Stuttgart BX oktober 25 · 2025-11-03",
+            "meta": {
+                "type": "INCOME",
+                "source": "dagomzet",
+                "eventId": "099cf6b5-f89c-41fb-80d7-cf0aa15dd5ce",
+                "eventName": "Stuttgart BX oktober 25",
+                "paymentMethod": "DIRECT",
+                "omzetEntryId": "omzet-mhjko8vg-p0bees",
+                "eur": 106.74,
+                "usd": 119.93
+            },
+            "createdAt": "2025-11-03T20:08:10.732Z",
+            "updatedAt": "2025-11-03T20:08:10.732Z",
+            "pending": false
+        }
+    ],
+    "categories": [
+        {
+            "id": "cat-event-income",
+            "name": "Event omzet",
+            "type": "INCOME",
+            "color": "#2A9626"
+        },
+        {
+            "id": "cat-event-expense",
+            "name": "Event kosten",
+            "type": "EXPENSE",
+            "color": "#E74C3C"
+        },
+        {
+            "id": "cat-purchase-invoice",
+            "name": "Inkoopfacturen",
+            "type": "EXPENSE",
+            "color": "#6C5CE7"
+        },
+        {
+            "id": "cat-overhead-expense",
+            "name": "Overheadkosten",
+            "type": "EXPENSE",
+            "color": "#0984E3"
+        }
+    ],
+    "accounts": [
+        {
+            "id": "acct-event-income-eur",
+            "name": "Dagomzet EUR",
+            "type": "CASH",
+            "currency": "EUR"
+        },
+        {
+            "id": "acct-event-expense-eur",
+            "name": "Eventkosten EUR",
+            "type": "EXPENSE",
+            "currency": "EUR"
+        },
+        {
+            "id": "acct-event-debtor-eur",
+            "name": "Debiteuren EUR",
+            "type": "RECEIVABLE",
+            "currency": "EUR"
+        },
+        {
+            "id": "acct-purchase-creditor-eur",
+            "name": "Crediteuren EUR",
+            "type": "PAYABLE",
+            "currency": "EUR"
+        }
+    ],
+    "pendingQueue": []
+}

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SumUp Callback</title>
+</head>
+<body>
+  <h1>SumUp OAuth Callback</h1>
+  <p id="msg">Wachten op code…</p>
+  <script>
+    // Haal code uit de URL en toon 'm
+    const params = new URLSearchParams(window.location.search);
+    const msgEl  = document.getElementById('msg');
+    if (params.has('code')) {
+      const code = params.get('code');
+      msgEl.textContent = 'Authorization code: ' + code;
+      // Hier kun je ook opslaan in localStorage of direct doorsturen naar je backend:
+      // localStorage.setItem('sumup_code', code);
+    } else {
+      msgEl.textContent = 'Geen code in querystring gevonden.';
+    }
+  </script>
+</body>
+</html>
