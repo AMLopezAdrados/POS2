@@ -2,7 +2,7 @@
 // Reisplanner — maandkalender + twee wizards (Voorraad & Beschikbaarheid) + quick-edit
 
 import { db, saveEvent, saveReizen } from './3_data.js';
-import { showAlert, closeAllModals } from './4_ui.js';
+import { showAlert, closeAllModals, formatCurrencyValue } from './4_ui.js';
 
 const CHEESE_TYPES = ['BG', 'ROOK', 'GEIT'];
 const BUFFER_FACTOR = 1.1;
@@ -1189,7 +1189,7 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
       });
     });
 
-    return { ...plan, events: sortedEvents, load, eventDetails };
+    return { ...plan, events: sortedEvents, load, eventDetails, centralKey };
   });
 
   const totalStockAll = _sumStock(stockOriginal);
@@ -1221,10 +1221,21 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
 
   const orderRows = demandRows
     .filter(row => row.shortage > 0)
-    .map(row => ({
-      ...row,
-      orderBreakdown: _crateBreakdown(row.shortage, row.capacity)
-    }));
+    .map(row => {
+      const meta = productMeta[row.product] || {};
+      const pricing = _resolveUnitPrice(meta);
+      const supplier = _supplierForProduct(row.product);
+      const cost = pricing.price > 0 ? pricing.price * row.shortage : 0;
+      return {
+        ...row,
+        orderBreakdown: _crateBreakdown(row.shortage, row.capacity),
+        supplier,
+        unitPrice: pricing.price,
+        priceCurrency: pricing.currency,
+        cost,
+        costLabel: cost > 0 ? formatCurrencyValue(cost, pricing.currency) : 'n.t.b.'
+      };
+    });
 
   const periodLabel = `${_fmt(aStart)} → ${_fmt(aEnd)}`;
 
@@ -1286,28 +1297,75 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
     });
     box.appendChild(demandTable);
 
-    const orderTitle=document.createElement('h3');
-    orderTitle.className='rp-sub';
-    orderTitle.textContent='🛒 Bestellijst';
-    box.appendChild(orderTitle);
+    const orderSection = document.createElement('details');
+    orderSection.className = 'rp-collapse';
+    const orderSummary = document.createElement('summary');
+    const orderCountLabel = orderRows.length ? `<span class="rp-summary-pill">${orderRows.length}</span>` : '';
+    orderSummary.innerHTML = `🛒 Bestellijst ${orderCountLabel}`;
+    orderSection.appendChild(orderSummary);
 
-    const orderShare = _shareButtons(`Bestellijst ${periodLabel}`, () => _formatOrderShare(periodLabel, orderRows));
-    box.appendChild(orderShare);
+    const orderContainer = document.createElement('div');
+    orderContainer.className = 'rp-collapse-body';
 
     if (!orderRows.length) {
-      box.appendChild(_p('Er is genoeg voorraad beschikbaar, geen bestelling nodig.'));
+      orderContainer.appendChild(_p('Er is genoeg voorraad beschikbaar, geen bestelling nodig.'));
     } else {
-      const orderTable=document.createElement('table');
-      orderTable.className='rp-table';
-      orderTable.innerHTML=`<thead><tr><th>Product</th><th style="text-align:right">Tekort</th><th style="text-align:right">Kratten</th></tr></thead><tbody></tbody>`;
-      const orderBody=orderTable.querySelector('tbody');
-      orderRows.forEach(row=>{
-        const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${_esc(row.product)}</td><td style="text-align:right">${row.shortage}</td><td style="text-align:right">${_formatUnitLabel(row.product, row.orderBreakdown.crates, row.orderBreakdown.loose)}</td>`;
+      const orderActions = document.createElement('div');
+      orderActions.className = 'rp-order-actions';
+      const orderShare = _shareButtons(`Bestellijst ${periodLabel}`, () => _formatOrderShare(periodLabel, orderRows));
+      orderActions.appendChild(orderShare);
+      const pdfControls = _buildOrderPdfButtons(orderRows, periodLabel);
+      if (pdfControls) orderActions.appendChild(pdfControls);
+      orderContainer.appendChild(orderActions);
+
+      const orderTable = document.createElement('table');
+      orderTable.className = 'rp-table';
+      orderTable.innerHTML = `<thead><tr><th>Product</th><th style="text-align:right">Tekort</th><th style="text-align:right">Kratten</th><th style="text-align:right">Kosten</th></tr></thead><tbody></tbody>`;
+      const orderBody = orderTable.querySelector('tbody');
+      const totalsByCurrency = {};
+
+      orderRows.forEach(row => {
+        const tr = document.createElement('tr');
+
+        const nameCell = document.createElement('td');
+        nameCell.textContent = row.product;
+        tr.appendChild(nameCell);
+
+        const shortageCell = document.createElement('td');
+        shortageCell.style.textAlign = 'right';
+        shortageCell.textContent = row.shortage;
+        tr.appendChild(shortageCell);
+
+        const crateCell = document.createElement('td');
+        crateCell.style.textAlign = 'right';
+        crateCell.textContent = _formatUnitLabel(row.product, row.orderBreakdown.crates, row.orderBreakdown.loose);
+        tr.appendChild(crateCell);
+
+        const costCell = document.createElement('td');
+        costCell.style.textAlign = 'right';
+        if (row.cost > 0 && row.priceCurrency) {
+          costCell.textContent = row.costLabel;
+          totalsByCurrency[row.priceCurrency] = (totalsByCurrency[row.priceCurrency] || 0) + row.cost;
+        } else {
+          costCell.classList.add('rp-muted');
+          costCell.textContent = 'n.t.b.';
+        }
+        tr.appendChild(costCell);
+
         orderBody.appendChild(tr);
       });
-      box.appendChild(orderTable);
+
+      orderContainer.appendChild(orderTable);
+
+      const totalLabel = document.createElement('div');
+      totalLabel.className = 'rp-order-total';
+      const totalText = _formatTotalsLabel(totalsByCurrency);
+      totalLabel.textContent = totalText ? `Totale kosten: ${totalText}` : 'Totale kosten: n.t.b.';
+      orderContainer.appendChild(totalLabel);
     }
+
+    orderSection.appendChild(orderContainer);
+    box.appendChild(orderSection);
 
     const packTitle=document.createElement('h3');
     packTitle.className='rp-sub';
@@ -1315,12 +1373,21 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
     box.appendChild(packTitle);
 
     busPlans.sort((a,b)=> a.bus.localeCompare(b.bus)).forEach(plan => {
-      const section=document.createElement('section');
-      section.className='rp-pack';
+      const packDetails = document.createElement('details');
+      packDetails.className = 'rp-collapse';
+      const summary = document.createElement('summary');
+      const eventCount = plan.events.length;
+      const totalToLoad = Object.values(plan.load || {}).reduce((sum, info) => sum + Math.max(0, Number(info.fromCentral || 0) + Number(info.fromOrder || 0)), 0);
+      summary.innerHTML = `🚚 ${_esc(plan.bus)} <span class="rp-summary-meta">${eventCount} evenementen • ${fmtPieces(totalToLoad)} st mee</span>`;
+      packDetails.appendChild(summary);
+
+      const container = document.createElement('div');
+      container.className = 'rp-collapse-body';
+
       const header=document.createElement('div');
       header.className='rp-pack-head';
-      header.innerHTML=`<strong>${_esc(plan.bus)}</strong> • ${plan.events.length} evenementen`;
-      section.appendChild(header);
+      header.innerHTML=`<strong>${_esc(plan.bus)}</strong> • ${eventCount} evenementen`;
+      container.appendChild(header);
 
       const timeline=document.createElement('div');
       timeline.className='rp-pack-timeline';
@@ -1330,37 +1397,97 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
         chip.innerHTML=`<strong>${_esc(det.naam || 'Event')}</strong><span>${_fmt(det.start)} → ${_fmt(det.eind)}</span><span>${fmtPieces(det.totalDemand)} st verwacht</span>`;
         timeline.appendChild(chip);
       });
-      section.appendChild(timeline);
+      container.appendChild(timeline);
 
-      section.appendChild(_shareButtons(`Pakbon ${plan.bus} ${periodLabel}`, () => _formatPackShare(periodLabel, plan)));
+      const packActions = document.createElement('div');
+      packActions.className = 'rp-pack-actions';
+      packActions.appendChild(_shareButtons(`Pakbon ${plan.bus} ${periodLabel}`, () => _formatPackShare(periodLabel, plan)));
+      container.appendChild(packActions);
+
+      const transferSourceName = plan.centralKey || centralKey;
+      const transferHeaderLabel = transferSourceName && transferSourceName !== plan.bus
+        ? `Uit ${_esc(transferSourceName)}`
+        : 'Uit basis';
+
+      const transferTotal = Object.values(plan.load || {}).reduce((sum, info) => sum + Math.max(0, Number(info.fromCentral || 0)), 0);
+      if (transferTotal > 0) {
+        const transferNote = document.createElement('div');
+        transferNote.className = 'rp-pack-note';
+        const sourceLabel = transferSourceName && transferSourceName !== plan.bus
+          ? transferSourceName
+          : 'de basis';
+        transferNote.textContent = `Verplaats ${fmtPieces(transferTotal)} stuks vanuit ${sourceLabel} naar ${plan.bus} voor vertrek.`;
+        container.appendChild(transferNote);
+      }
 
       const table=document.createElement('table');
       table.className='rp-table rp-compact';
-      table.innerHTML=`<thead><tr><th>Product</th><th style="text-align:right">Nodig</th><th style="text-align:right">Uit bus</th><th style="text-align:right">Aanvullen</th><th style="text-align:right">Te bestellen</th><th style="text-align:right">Kratten</th></tr></thead><tbody></tbody>`;
+      table.innerHTML=`<thead><tr><th>Product</th><th style="text-align:right">Nodig</th><th style="text-align:right">Uit bus</th><th style="text-align:right">${transferHeaderLabel}</th><th style="text-align:right">Mee te nemen</th><th style="text-align:right">Kratten</th></tr></thead><tbody></tbody>`;
       const body=table.querySelector('tbody');
       Object.entries(plan.load)
         .sort((a,b)=> a[0].localeCompare(b[0]))
         .forEach(([product, details])=>{
           const breakdown=_crateBreakdown(details.needed, details.capacity);
-          const replenish=details.fromCentral + details.fromOrder;
+          const transfer = Math.max(0, Math.round(Number(details.fromCentral)||0));
+          const order = Math.max(0, Math.round(Number(details.fromOrder)||0));
+          const toLoad = transfer + order;
+
           const tr=document.createElement('tr');
-          tr.innerHTML=`<td>${_esc(product)}</td><td style="text-align:right">${details.needed}</td><td style="text-align:right">${details.fromBus}</td><td style="text-align:right">${replenish}</td><td style="text-align:right" class="${details.fromOrder>0?'rp-neg':'rp-pos'}">${details.fromOrder}</td><td style="text-align:right">${_formatUnitLabel(product, breakdown.crates, breakdown.loose)}</td>`;
+
+          const productCell = document.createElement('td');
+          productCell.textContent = product;
+          tr.appendChild(productCell);
+
+          const neededCell = document.createElement('td');
+          neededCell.style.textAlign = 'right';
+          neededCell.textContent = Math.max(0, Math.round(Number(details.needed)||0));
+          tr.appendChild(neededCell);
+
+          const fromBusCell = document.createElement('td');
+          fromBusCell.style.textAlign = 'right';
+          fromBusCell.textContent = Math.max(0, Math.round(Number(details.fromBus)||0));
+          tr.appendChild(fromBusCell);
+
+          const transferCell = document.createElement('td');
+          transferCell.style.textAlign = 'right';
+          transferCell.textContent = transfer;
+          tr.appendChild(transferCell);
+
+          const loadCell = document.createElement('td');
+          loadCell.style.textAlign = 'right';
+          loadCell.textContent = toLoad;
+          if (order > 0) {
+            const badge = document.createElement('div');
+            badge.className = 'rp-pack-flag';
+            badge.textContent = `Inclusief ${order} st bestelling`;
+            loadCell.appendChild(badge);
+          }
+          tr.appendChild(loadCell);
+
+          const crateCell = document.createElement('td');
+          crateCell.style.textAlign = 'right';
+          crateCell.textContent = _formatUnitLabel(product, breakdown.crates, breakdown.loose);
+          tr.appendChild(crateCell);
+
           body.appendChild(tr);
         });
-      section.appendChild(table);
-      box.appendChild(section);
+      container.appendChild(table);
+
+      packDetails.appendChild(container);
+      box.appendChild(packDetails);
     });
 
     const handleExport=()=>{
       try {
-        const lines=['Product;Tekort;Kratten'];
+        const lines=['Product;Tekort;Kratten;Kosten'];
         orderRows.forEach(row=>{
           const breakdown=row.orderBreakdown;
           const crates = Math.max(0, Math.round(Number(breakdown.crates)||0));
           const loose = Math.max(0, Math.round(Number(breakdown.loose)||0));
           const capacity = Math.max(1, Math.round(Number(row.capacity)||Number(productMeta[row.product]?.capacity)||1));
           const totalCrates = crates + (loose > 0 ? Math.ceil(loose / capacity) : 0);
-          lines.push(`${row.product};${row.shortage};${totalCrates}`);
+          const costLabel = row.cost > 0 ? row.costLabel : 'n.t.b.';
+          lines.push(`${row.product};${row.shortage};${totalCrates};${costLabel}`);
         });
         const blob=new Blob([lines.join('\n')],{type:'text/csv;charset=utf-8;'});
         const url=URL.createObjectURL(blob);
@@ -1676,10 +1803,11 @@ function _formatOrderShare(periodLabel, rows){
     lines.push('', 'Geen bestelling nodig.');
     return lines.join('\n');
   }
-  lines.push('', 'Product | Tekort | Kratten');
+  lines.push('', 'Product | Tekort | Kratten | Kosten');
   rows.forEach(row=>{
     const breakdown=row.orderBreakdown || { crates:0, loose:0 };
-    lines.push(`${row.product}: ${row.shortage} stuks (${_formatUnitLabel(row.product, breakdown.crates, breakdown.loose)})`);
+    const costLabel = row.cost > 0 ? row.costLabel : 'n.t.b.';
+    lines.push(`${row.product}: ${row.shortage} st | ${_formatUnitLabel(row.product, breakdown.crates, breakdown.loose)} | ${costLabel}`);
   });
   return lines.join('\n');
 }
@@ -1688,16 +1816,141 @@ function _formatPackShare(periodLabel, plan){
   if (plan.events?.length){
     lines.push(`Evenementen: ${plan.events.map(ev=>`${ev.naam || 'Event'} ${_fmt(ev.start)}→${_fmt(ev.eind)}`).join(', ')}`);
   }
-  lines.push('', 'Product | Nodig | Uit bus | Aanvullen | Te bestellen | Kratten');
+  const transferSource = plan.centralKey || '';
+  const transferLabel = transferSource && transferSource !== plan.bus ? `Uit ${transferSource}` : 'Uit basis';
+  lines.push('', `Product | Nodig | Uit bus | ${transferLabel} | Mee te nemen | Kratten`);
   Object.entries(plan.load||{})
     .sort((a,b)=>a[0].localeCompare(b[0]))
     .forEach(([product, details])=>{
       const breakdown=_crateBreakdown(details.needed, details.capacity);
-      const replenish = details.fromCentral + details.fromOrder;
-      lines.push(`${product}: ${details.needed} | ${details.fromBus} | ${replenish} | ${details.fromOrder} | ${_formatUnitLabel(product, breakdown.crates, breakdown.loose)}`);
+      const transfer = Math.max(0, Math.round(Number(details.fromCentral)||0));
+      const order = Math.max(0, Math.round(Number(details.fromOrder)||0));
+      const toLoad = transfer + order;
+      const orderSuffix = order > 0 ? ` (+${order} st bestelling)` : '';
+      lines.push(`${product}: ${details.needed} | ${details.fromBus} | ${transfer} | ${toLoad}${orderSuffix} | ${_formatUnitLabel(product, breakdown.crates, breakdown.loose)}`);
     });
   return lines.join('\n');
 }
+
+function _formatTotalsLabel(totals){
+  const entries = Object.entries(totals || {}).filter(([, value]) => Number.isFinite(value) && Math.abs(value) > 0.0001);
+  if (!entries.length) return '';
+  return entries
+    .map(([currency, value]) => formatCurrencyValue(value, currency))
+    .join(' + ');
+}
+
+function _buildOrderPdfButtons(rows, periodLabel){
+  const groups = _groupOrdersBySupplier(rows);
+  if (!groups.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'rp-order-pdf';
+  groups.forEach(group => {
+    const btn = _btn(`📄 PDF ${group.supplier}`, 'amber');
+    btn.onclick = () => _exportOrderPdf(group, periodLabel);
+    wrap.appendChild(btn);
+  });
+  return wrap;
+}
+
+function _groupOrdersBySupplier(rows){
+  const buckets = new Map();
+  (rows || []).forEach(row => {
+    if (!row) return;
+    const supplier = row.supplier || 'Leverancier';
+    if (!buckets.has(supplier)) buckets.set(supplier, []);
+    buckets.get(supplier).push(row);
+  });
+  return Array.from(buckets.entries()).map(([supplier, list]) => ({ supplier, rows: list }));
+}
+
+function _exportOrderPdf(group, periodLabel){
+  const jsPDF = window.jspdf?.jsPDF;
+  if (typeof jsPDF !== 'function') {
+    showAlert('PDF-export vereist jsPDF in de browser.', 'error');
+    return;
+  }
+  const rows = Array.isArray(group?.rows) ? group.rows : [];
+  if (!rows.length) {
+    showAlert(`Geen producten voor ${group?.supplier || 'deze leverancier'}.`, 'info');
+    return;
+  }
+
+  const doc = new jsPDF('p', 'pt', 'a4');
+  const margin = 40;
+  const lineHeight = 18;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = margin;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(18);
+  doc.text(`Bestellijst ${group.supplier}`, margin, y);
+  y += lineHeight;
+
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Periode: ${periodLabel}`, margin, y);
+  y += lineHeight;
+
+  const totalsByCurrency = {};
+  const columnX = {
+    product: margin,
+    qty: margin + 260,
+    crates: margin + 360,
+    cost: margin + 450
+  };
+
+  const renderHeader = () => {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Product', columnX.product, y);
+    doc.text('Aantal', columnX.qty, y);
+    doc.text('Kratten', columnX.crates, y);
+    doc.text('Kosten', columnX.cost, y);
+    doc.setFont('helvetica', 'normal');
+    y += lineHeight;
+  };
+
+  renderHeader();
+
+  rows.forEach(row => {
+    const breakdown = row.orderBreakdown || { crates: 0, loose: 0 };
+    const crateLabel = _formatUnitLabel(row.product, breakdown.crates, breakdown.loose);
+    const costLabel = row.cost > 0 ? row.costLabel : 'n.t.b.';
+    if (row.cost > 0 && row.priceCurrency) {
+      totalsByCurrency[row.priceCurrency] = (totalsByCurrency[row.priceCurrency] || 0) + row.cost;
+    }
+    const productLines = doc.splitTextToSize(row.product || 'Product', columnX.qty - columnX.product - 10);
+    productLines.forEach((line, index) => {
+      if (y > pageHeight - margin) {
+        doc.addPage();
+        y = margin;
+        renderHeader();
+      }
+      doc.text(line, columnX.product, y);
+      if (index === 0) {
+        doc.text(String(row.shortage || 0), columnX.qty, y);
+        doc.text(crateLabel, columnX.crates, y);
+        doc.text(costLabel, columnX.cost, y);
+      }
+      y += lineHeight;
+    });
+  });
+
+  if (y > pageHeight - margin) {
+    doc.addPage();
+    y = margin;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Totale kosten:', columnX.product, y);
+  doc.setFont('helvetica', 'normal');
+  const totalsLabel = _formatTotalsLabel(totalsByCurrency) || 'n.t.b.';
+  doc.text(totalsLabel, columnX.qty, y);
+
+  const safeName = (group.supplier || 'leverancier').replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+  doc.save(`bestelling_${safeName}_${Date.now()}.pdf`);
+}
+
 function _modal(build){
   closeAllModals();
   const ov=document.createElement('div'); ov.className='modal rp-modal';
@@ -2039,6 +2292,17 @@ function _supplierForProduct(name){
   const t=prod?.type||'';
   return ['SOUV','KOEK','MOSTERD'].includes(t)?'Souvenirleverancier':'Kaashandel';
 }
+function _resolveUnitPrice(meta = {}){
+  const eur = Number(meta?.eur);
+  if (Number.isFinite(eur) && eur > 0) {
+    return { price: eur, currency: 'EUR' };
+  }
+  const usd = Number(meta?.usd);
+  if (Number.isFinite(usd) && usd > 0) {
+    return { price: usd, currency: 'USD' };
+  }
+  return { price: 0, currency: 'EUR' };
+}
 function _weightsFromHistory(){
   const totals = (db.verkoopMix?.totals?.products) || {};
   const weights = {};
@@ -2258,6 +2522,20 @@ function _injectPlannerCSS(){
   .rp-cal-wrap{ padding:.7rem; }
   .rp-weekdays{ display:grid; grid-template-columns:repeat(7,1fr); gap:6px; padding:0 .2rem; color:#2A9626; font-weight:900; }
   .rp-weekdays>div{ text-align:center; }
+  .rp-collapse{ border:1px solid rgba(15,23,42,.08); border-radius:12px; margin-top:1rem; background:#f8fafc; overflow:hidden; }
+  .rp-collapse summary{ list-style:none; cursor:pointer; padding:.75rem 1rem; font-weight:800; display:flex; justify-content:space-between; align-items:center; gap:.6rem; }
+  .rp-collapse summary::-webkit-details-marker{ display:none; }
+  .rp-collapse[open]>summary{ border-bottom:1px solid rgba(15,23,42,.08); }
+  .rp-collapse-body{ padding:1rem; display:flex; flex-direction:column; gap:1rem; }
+  .rp-summary-pill{ display:inline-flex; align-items:center; justify-content:center; background:#2A9626; color:#fff; font-size:.72rem; border-radius:999px; padding:.1rem .6rem; font-weight:700; }
+  .rp-summary-meta{ font-size:.72rem; font-weight:600; color:rgba(15,23,42,.65); }
+  .rp-order-actions{ display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; }
+  .rp-order-pdf{ display:flex; flex-wrap:wrap; gap:.5rem; }
+  .rp-order-total{ margin-top:.25rem; font-weight:800; color:#194a1f; }
+  .rp-pack-actions{ display:flex; flex-wrap:wrap; gap:.5rem; margin:.75rem 0; }
+  .rp-pack-note{ background:rgba(42,150,38,.08); border-radius:10px; padding:.6rem .8rem; color:#194a1f; font-weight:600; }
+  .rp-pack-flag{ margin-top:.25rem; font-size:.7rem; color:#C62828; font-weight:700; }
+  .rp-muted{ color:rgba(15,23,42,.5) !important; }
   .rp-grid{ display:grid; grid-template-columns:repeat(7,1fr); grid-template-rows:repeat(6,1fr); gap:6px; height:calc(92vh - 120px); }
   .rp-cell{ background:#fff; border:1px solid #e8e8e8; border-radius:10px; position:relative; overflow:hidden; padding:2px 4px; }
   .rp-cell.dim{ background:#fafafa; }
