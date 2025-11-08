@@ -119,12 +119,23 @@ export function renderReisPlannerPage(container) {
     list.className = 'reis-list';
     upcoming.forEach(ev => {
       const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'reis-item';
       const start = formatDate(ev.beginDatum || ev.startdatum || ev.start);
       const end = formatDate(ev.eindDatum || ev.einddatum || ev.end);
-      item.innerHTML = `
+      const revenueLabel = _formatExpectedTurnoverLabel(ev) || 'Geen omzet gepland';
+      const hasPlan = _eventHasCheesePlan(ev);
+      const statusClass = hasPlan ? 'reis-status' : 'reis-status reis-status--warn';
+      const statusLabel = hasPlan ? '🧀 Kaas gepland' : '⚪ Kaas niet gepland';
+      button.innerHTML = `
         <div class="reis-title">${esc(ev.naam || 'Onbekend')}</div>
         <div class="reis-meta">${start}${end ? ` – ${end}` : ''} • ${esc(ev.locatie || 'n.t.b.')}</div>
+        <div class="reis-amount">${esc(revenueLabel)}</div>
+        <div class="reis-badges"><span class="${statusClass}">${esc(statusLabel)}</span></div>
       `;
+      button.addEventListener('click', () => _openEventQuickLook(ev));
+      item.appendChild(button);
       list.appendChild(item);
     });
     upcomingCard.appendChild(list);
@@ -147,6 +158,9 @@ export function renderReisPlannerPage(container) {
     list.className = 'reis-list';
     items.forEach(meta => {
       const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'reis-item';
       const range = _formatTripRange(meta.startIso, meta.endIso);
       const route = meta.bestemming ? ` • ${esc(meta.bestemming)}` : '';
 
@@ -168,14 +182,21 @@ export function renderReisPlannerPage(container) {
       const logistiekLine = logistiekBits.join(' • ');
 
       const notesLine = meta.notes ? esc(meta.notes) : '';
+      const statusNormalized = String(meta.status || '').toLowerCase();
+      const isWarnStatus = ['cancelled', 'geannuleerd', 'stopped'].includes(statusNormalized);
+      const statusLabel = meta.status ? meta.status.toString().toUpperCase() : 'PLANNING';
+      const statusClass = isWarnStatus ? 'reis-status reis-status--warn' : 'reis-status';
 
-      item.innerHTML = `
+      button.innerHTML = `
         <div class="reis-title">${esc(meta.title)}</div>
         <div class="reis-meta">${range}${route}</div>
         ${infoLine ? `<div class="reis-notes">${infoLine}</div>` : ''}
         ${logistiekLine ? `<div class="reis-notes">${logistiekLine}</div>` : ''}
         ${notesLine ? `<div class="reis-notes">${notesLine}</div>` : ''}
+        <div class="reis-badges"><span class="${statusClass}">${esc(statusLabel)}</span></div>
       `;
+      button.addEventListener('click', () => _openTripDetails(meta));
+      item.appendChild(button);
       list.appendChild(item);
     });
 
@@ -200,6 +221,549 @@ export function renderReisPlannerPage(container) {
   mount.appendChild(grid);
 }
 
+function _formatExpectedTurnoverLabel(evt) {
+  const amounts = _resolveExpectedTurnoverAmounts(evt);
+  const parts = [];
+  if (amounts.eur > 0) parts.push(formatCurrencyValue(amounts.eur, 'EUR'));
+  if (amounts.usd > 0) parts.push(formatCurrencyValue(amounts.usd, 'USD'));
+  if (parts.length) return parts.join(' • ');
+  const fallback = _toNumber(evt?.verwachteOmzet || evt?.expectedRevenue || evt?.budget || evt?.bedrag);
+  if (fallback > 0) {
+    return formatCurrencyValue(fallback, 'USD');
+  }
+  return '';
+}
+
+function _resolveExpectedTurnoverAmounts(evt) {
+  if (!evt) return { usd: 0, eur: 0 };
+  const planning = evt?.planning?.expectedTurnover || evt?.planning || {};
+  const usdCandidates = [
+    planning?.usd,
+    planning?.USD,
+    planning?.amountUSD,
+    planning?.expectedTurnoverUSD,
+    planning?.expectedRevenueUSD,
+    evt?.expectedTurnoverUSD,
+    evt?.verwachteOmzetUSD,
+    evt?.budgetUSD,
+    evt?.bedragUSD
+  ];
+  const eurCandidates = [
+    planning?.eur,
+    planning?.EUR,
+    planning?.amountEUR,
+    planning?.expectedTurnoverEUR,
+    planning?.expectedRevenueEUR,
+    evt?.expectedTurnoverEUR,
+    evt?.verwachteOmzetEUR,
+    evt?.budgetEUR,
+    evt?.bedragEUR
+  ];
+
+  let usd = 0;
+  for (const candidate of usdCandidates) {
+    const value = _toNumber(candidate);
+    if (value > 0) {
+      usd = value;
+      break;
+    }
+  }
+
+  let eur = 0;
+  for (const candidate of eurCandidates) {
+    const value = _toNumber(candidate);
+    if (value > 0) {
+      eur = value;
+      break;
+    }
+  }
+
+  if (!usd) {
+    const fallbackUsd = _toNumber(evt?.bedrag || evt?.verwachteOmzet || evt?.expectedRevenue || 0);
+    if (fallbackUsd > 0) {
+      usd = fallbackUsd;
+    }
+  }
+
+  return { usd, eur };
+}
+
+function _eventHasCheesePlan(evt) {
+  const plan = _extractCheesePlan(evt);
+  return Object.values(plan).some(value => Number(value) > 0);
+}
+
+function _extractCheesePlan(evt) {
+  const plan = {};
+  if (!evt) return plan;
+  const estimate = evt?.planning?.cheeseEstimate;
+  const sourceProducts = estimate && typeof estimate === 'object'
+    ? (estimate.products && typeof estimate.products === 'object' ? estimate.products : estimate)
+    : null;
+  if (sourceProducts && typeof sourceProducts === 'object') {
+    Object.entries(sourceProducts).forEach(([name, value]) => {
+      const qty = Math.max(0, Math.round(Number(value) || 0));
+      if (qty) plan[name] = qty;
+    });
+  }
+  if (!Object.keys(plan).length && evt.plan && typeof evt.plan === 'object') {
+    Object.entries(evt.plan).forEach(([name, value]) => {
+      const qty = Math.max(0, Math.round(Number(value) || 0));
+      if (qty) plan[name] = qty;
+    });
+  }
+  return plan;
+}
+
+function _getCheeseCatalog() {
+  const catalog = {};
+  (db.producten || []).forEach(prod => {
+    const type = String(prod?.type || '').toUpperCase();
+    if (!CHEESE_TYPES.includes(type)) return;
+    catalog[prod.naam] = {
+      type,
+      capacity: _capacity(prod.naam)
+    };
+  });
+  return catalog;
+}
+
+function _cheeseTotalsFromPlan(plan) {
+  const totals = { BG: 0, ROOK: 0, GEIT: 0 };
+  const catalog = _getCheeseCatalog();
+  Object.entries(plan || {}).forEach(([name, value]) => {
+    const qty = Math.max(0, Math.round(Number(value) || 0));
+    if (!qty) return;
+    const type = catalog[name]?.type;
+    if (type && type in totals) {
+      totals[type] += qty;
+    }
+  });
+  return totals;
+}
+
+function _formatPieces(value) {
+  return Number(value || 0).toLocaleString('nl-NL');
+}
+
+function _analyzeEventCheese(evt) {
+  const plan = _extractCheesePlan(evt);
+  const hasPlan = Object.values(plan).some(val => Number(val) > 0);
+  const catalog = _getCheeseCatalog();
+  const availableTotals = _sumStock(db.voorraad || {});
+  const availableByType = { BG: 0, ROOK: 0, GEIT: 0 };
+  Object.entries(availableTotals).forEach(([product, qty]) => {
+    const type = catalog[product]?.type;
+    if (type && type in availableByType) {
+      availableByType[type] += Math.max(0, Math.round(Number(qty) || 0));
+    }
+  });
+  const totalAvailableAll = Object.values(availableTotals).reduce((sum, qty) => sum + Math.max(0, Math.round(Number(qty) || 0)), 0);
+  const totalPieces = Object.values(plan).reduce((sum, qty) => sum + Math.max(0, Math.round(Number(qty) || 0)), 0);
+  const shortages = [];
+  Object.entries(plan).forEach(([product, qty]) => {
+    const needed = Math.max(0, Math.round(Number(qty) || 0));
+    const available = Math.max(0, Math.round(Number(availableTotals[product] || 0)));
+    if (needed > available) {
+      shortages.push({
+        name: product,
+        needed,
+        available,
+        shortage: needed - available,
+        type: catalog[product]?.type || ''
+      });
+    }
+  });
+
+  const busKey = evt?.bus || '';
+  const rawBusStock = (db?.voorraad && typeof db.voorraad === 'object') ? (db.voorraad[busKey] || {}) : {};
+  const busStock = {};
+  Object.entries(rawBusStock).forEach(([product, qty]) => {
+    busStock[product] = Math.max(0, Math.round(Number(qty) || 0));
+  });
+  const busShortages = [];
+  Object.entries(plan).forEach(([product, qty]) => {
+    const needed = Math.max(0, Math.round(Number(qty) || 0));
+    const available = Math.max(0, Math.round(Number(busStock[product] || 0)));
+    if (needed > available) {
+      busShortages.push({
+        name: product,
+        needed,
+        available,
+        shortage: needed - available,
+        type: catalog[product]?.type || ''
+      });
+    }
+  });
+  const totalBusStock = Object.values(busStock).reduce((sum, qty) => sum + qty, 0);
+
+  return {
+    hasPlan,
+    plan,
+    totalPieces,
+    planByType: _cheeseTotalsFromPlan(plan),
+    availableTotals,
+    availableByType,
+    shortages,
+    hasEnough: shortages.length === 0,
+    busKey,
+    busStock,
+    busShortages,
+    busHasEnough: busShortages.length === 0,
+    totalAvailableAll,
+    totalBusStock
+  };
+}
+
+function _openEventQuickLook(evt) {
+  if (!evt) return;
+  const analysis = _analyzeEventCheese(evt);
+  const start = formatDate(evt.beginDatum || evt.startdatum || evt.start);
+  const end = formatDate(evt.eindDatum || evt.einddatum || evt.end);
+  const revenueLabel = _formatExpectedTurnoverLabel(evt) || 'Geen omzet gepland';
+
+  _modal(() => {
+    const box = document.createElement('div');
+    box.appendChild(_h2(`🧀 Kaascheck • ${evt.naam || 'Event'}`));
+
+    const metaGrid = document.createElement('div');
+    metaGrid.className = 'reis-detail-grid';
+    metaGrid.innerHTML = `
+      <div><strong>Periode</strong><span>${esc(start || '?')}${end ? ` → ${esc(end)}` : ''}</span></div>
+      <div><strong>Locatie</strong><span>${esc(evt.locatie || 'n.t.b.')}</span></div>
+      <div><strong>Bus</strong><span>${esc(evt.bus || 'n.t.b.')}</span></div>
+      <div><strong>Omzet</strong><span>${esc(revenueLabel || 'n.t.b.')}</span></div>
+    `;
+    box.appendChild(metaGrid);
+
+    if (!analysis.hasPlan) {
+      box.appendChild(_p('Nog geen kaasplanning voor dit evenement.'));
+    } else {
+      const summaryGrid = document.createElement('div');
+      summaryGrid.className = 'reis-detail-grid';
+      const busLabel = analysis.busKey ? `${analysis.busKey} • ${_formatPieces(analysis.totalBusStock)} stuks` : `${_formatPieces(analysis.totalBusStock)} stuks`;
+      summaryGrid.innerHTML = `
+        <div><strong>Verwachte vraag</strong><span>${_formatPieces(analysis.totalPieces)} stuks</span></div>
+        <div><strong>Totaal voorraad</strong><span>${_formatPieces(analysis.totalAvailableAll)} stuks</span></div>
+        <div><strong>Voorraad bus</strong><span>${esc(busLabel)}</span></div>
+      `;
+      box.appendChild(summaryGrid);
+
+      const statusNote = document.createElement('div');
+      statusNote.className = 'rp-pack-note';
+      if (analysis.hasEnough) {
+        statusNote.textContent = '✅ Genoeg kaas in totale voorraad om de planning te dekken.';
+      } else {
+        statusNote.textContent = '⚠️ Onvoldoende voorraad voor alle producten. Bekijk de tekorten hieronder.';
+        statusNote.style.background = 'rgba(198,40,40,.08)';
+        statusNote.style.color = '#c62828';
+      }
+      box.appendChild(statusNote);
+
+      if (!analysis.busHasEnough && analysis.hasEnough) {
+        const busNote = document.createElement('div');
+        busNote.className = 'rp-pack-note';
+        busNote.textContent = 'Let op: busvoorraad is onvoldoende, vul aan vanuit de basis.';
+        box.appendChild(busNote);
+      }
+
+      const table = document.createElement('table');
+      table.className = 'rp-table rp-compact';
+      table.innerHTML = `<thead><tr><th>Product</th><th style="text-align:right">Nodig</th><th style="text-align:right">Voorraad totaal</th><th style="text-align:right">Voorraad bus</th><th style="text-align:right">Tekort</th></tr></thead><tbody></tbody>`;
+      const tbody = table.querySelector('tbody');
+      Object.entries(analysis.plan)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .forEach(([product, needed]) => {
+          const availableAll = Math.max(0, Math.round(Number(analysis.availableTotals[product] || 0)));
+          const availableBus = Math.max(0, Math.round(Number(analysis.busStock[product] || 0)));
+          const shortageEntry = analysis.shortages.find(item => item.name === product);
+          const shortage = shortageEntry ? shortageEntry.shortage : 0;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${_esc(product)}</td>
+            <td style="text-align:right">${needed}</td>
+            <td style="text-align:right">${availableAll}</td>
+            <td style="text-align:right">${availableBus}</td>
+            <td style="text-align:right" class="${shortage > 0 ? 'rp-neg' : 'rp-pos'}">${shortage}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      box.appendChild(table);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'rp-cta';
+    const closeBtn = _btn('❌ Sluiten', 'red');
+    closeBtn.onclick = closeAllModals;
+    actions.appendChild(closeBtn);
+    if (evt.startdatum && evt.einddatum) {
+      const planBtn = _btn('📦 Plan aanpassen', 'green');
+      planBtn.onclick = () => {
+        closeAllModals();
+        _wizardVoorraad(evt.startdatum, evt.einddatum);
+      };
+      actions.appendChild(planBtn);
+    }
+    box.appendChild(actions);
+    return box;
+  });
+}
+
+function _openTripDetails(meta) {
+  if (!meta || !meta.raw) return;
+  const reis = meta.raw;
+  const startLabel = formatDate(meta.startIso || reis.start || reis.begin || reis.startdatum);
+  const endLabel = formatDate(meta.endIso || reis.end || reis.eind || reis.einddatum);
+  const updatedLabel = reis.updatedAt ? new Date(reis.updatedAt).toLocaleString('nl-NL') : 'Onbekend';
+  const omzetLabel = meta.omzet > 0 ? `$${Number(meta.omzet).toLocaleString('nl-NL', { minimumFractionDigits: 0 })}` : 'n.t.b.';
+  const kostenLabel = Number(reis.kosten) > 0 ? formatCurrencyValue(Number(reis.kosten), 'EUR') : 'n.t.b.';
+  const statusLabel = String(reis.status || reis.state || 'planned').toUpperCase();
+
+  _modal(() => {
+    const box = document.createElement('div');
+    box.appendChild(_h2(`✈️ ${esc(meta.title || 'Reis')}`));
+
+    const infoCard = document.createElement('div');
+    infoCard.className = 'rp-card';
+    const infoHead = document.createElement('div');
+    infoHead.className = 'rp-card-head';
+    infoHead.textContent = 'Reisdetails';
+    infoCard.appendChild(infoHead);
+
+    const infoGrid = document.createElement('div');
+    infoGrid.className = 'reis-detail-grid';
+    infoGrid.innerHTML = `
+      <div><strong>Periode</strong><span>${esc(startLabel || '?')}${endLabel ? ` → ${esc(endLabel)}` : ''}</span></div>
+      <div><strong>Bus</strong><span>${esc(meta.bus || reis.bus || 'n.t.b.')}</span></div>
+      <div><strong>Status</strong><span class="reis-inline-badge">${esc(statusLabel)}</span></div>
+      <div><strong>Omzet</strong><span>${esc(omzetLabel)}</span></div>
+      <div><strong>Kosten</strong><span>${esc(kostenLabel)}</span></div>
+      <div><strong>Laatst bijgewerkt</strong><span>${esc(updatedLabel)}</span></div>
+    `;
+    infoCard.appendChild(infoGrid);
+    box.appendChild(infoCard);
+
+    const orders = Array.isArray(reis.bestelling) ? reis.bestelling : [];
+    const orderCard = document.createElement('div');
+    orderCard.className = 'rp-card';
+    const orderHead = document.createElement('div');
+    orderHead.className = 'rp-card-head';
+    orderHead.textContent = '🛒 Bestellijst';
+    orderCard.appendChild(orderHead);
+    if (!orders.length) {
+      orderCard.appendChild(_p('Geen bestelling nodig voor deze reis.'));
+    } else {
+      const table = document.createElement('table');
+      table.className = 'rp-table rp-compact';
+      table.innerHTML = `<thead><tr><th>Product</th><th style="text-align:right">Kratten</th><th style="text-align:right">Stuks</th></tr></thead><tbody></tbody>`;
+      const tbody = table.querySelector('tbody');
+      orders
+        .slice()
+        .sort((a, b) => String(a?.product || '').localeCompare(String(b?.product || '')))
+        .forEach(order => {
+          const crates = Math.max(0, Math.round(Number(order?.crates) || 0));
+          const pieces = Math.max(0, Math.round(Number(order?.pieces || order?.stuks) || 0));
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${_esc(order?.product || 'Product')}</td><td style="text-align:right">${crates}</td><td style="text-align:right">${pieces}</td>`;
+          tbody.appendChild(tr);
+        });
+      orderCard.appendChild(table);
+    }
+    box.appendChild(orderCard);
+
+    const load = reis.logistiek?.load || {};
+    const loadEntries = Object.entries(load || {});
+    const packCard = document.createElement('div');
+    packCard.className = 'rp-card';
+    const packHead = document.createElement('div');
+    packHead.className = 'rp-card-head';
+    packHead.textContent = '🚚 Pakbon overzicht';
+    packCard.appendChild(packHead);
+    if (!loadEntries.length) {
+      packCard.appendChild(_p('Geen pakbon beschikbaar.'));
+    } else {
+      const table = document.createElement('table');
+      table.className = 'rp-table rp-compact';
+      table.innerHTML = `<thead><tr><th>Product</th><th style="text-align:right">Nodig</th><th style="text-align:right">Uit bus</th><th style="text-align:right">Uit basis</th><th style="text-align:right">Bestellen</th><th style="text-align:right">Mee te nemen</th><th style="text-align:right">Kratten</th></tr></thead><tbody></tbody>`;
+      const tbody = table.querySelector('tbody');
+      loadEntries
+        .slice()
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .forEach(([product, details]) => {
+          const info = details || {};
+          const needed = Math.max(0, Math.round(Number(info.needed) || 0));
+          const fromBus = Math.max(0, Math.round(Number(info.fromBus) || 0));
+          const fromCentral = Math.max(0, Math.round(Number(info.fromCentral) || 0));
+          const fromOrder = Math.max(0, Math.round(Number(info.fromOrder) || 0));
+          const toLoad = fromCentral + fromOrder;
+          const capacity = Math.max(1, Math.round(Number(info.capacity) || _capacity(product)));
+          const breakdown = _crateBreakdown(toLoad, capacity);
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${_esc(product)}</td>
+            <td style="text-align:right">${needed}</td>
+            <td style="text-align:right">${fromBus}</td>
+            <td style="text-align:right">${fromCentral}</td>
+            <td style="text-align:right">${fromOrder}</td>
+            <td style="text-align:right">${toLoad}</td>
+            <td style="text-align:right">${_formatUnitLabel(product, breakdown.crates, breakdown.loose)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      packCard.appendChild(table);
+    }
+    box.appendChild(packCard);
+
+    const actions = document.createElement('div');
+    actions.className = 'rp-cta';
+    const refreshBtn = _btn('🔄 Actualiseren', 'blue');
+    refreshBtn.onclick = async () => {
+      refreshBtn.disabled = true;
+      try {
+        await _actualizeTrip(meta, refreshBtn);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    };
+    const closeBtn = _btn('❌ Sluiten', 'red');
+    closeBtn.onclick = closeAllModals;
+    actions.append(refreshBtn, closeBtn);
+    box.appendChild(actions);
+    return box;
+  });
+}
+
+function _buildSelectionFromTrip(meta) {
+  const reis = meta?.raw;
+  if (!reis) return [];
+  const bus = meta?.bus || reis.bus || '';
+  const events = Array.isArray(reis.events) ? reis.events : [];
+  const allEvents = Array.isArray(db?.evenementen) ? db.evenementen : [];
+  return events
+    .map(entry => {
+      const eventId = entry?.id || entry?.eventId;
+      if (!eventId) return null;
+      const sourceEvent = allEvents.find(ev => ev?.id === eventId);
+      if (!sourceEvent) return null;
+      const turnover = _resolveExpectedTurnoverAmounts(sourceEvent);
+      const plan = _extractCheesePlan(sourceEvent);
+      return {
+        evt: sourceEvent,
+        eventId: sourceEvent.id,
+        naam: sourceEvent.naam,
+        locatie: sourceEvent.locatie,
+        type: sourceEvent.type,
+        bus: bus || sourceEvent.bus || 'VOLENDAM',
+        startdatum: sourceEvent.startdatum || entry.start || entry.begin || sourceEvent.beginDatum,
+        einddatum: sourceEvent.einddatum || entry.eind || entry.end || sourceEvent.eindDatum,
+        bedrag: turnover.usd > 0 ? turnover.usd : turnover.eur,
+        plan,
+        demand: plan,
+        cheeseEstimate: sourceEvent.planning?.cheeseEstimate
+      };
+    })
+    .filter(Boolean);
+}
+
+async function _actualizeTrip(meta) {
+  if (!meta || !meta.raw) {
+    showAlert('Geen reis geselecteerd om te actualiseren.', 'warning');
+    return;
+  }
+  const selection = _buildSelectionFromTrip(meta);
+  if (!selection.length) {
+    showAlert('Geen gekoppelde evenementen gevonden voor deze reis.', 'warning');
+    return;
+  }
+
+  const startIso = _normalizeTripDate(meta.startIso || meta.raw.start || meta.raw.begin || meta.raw.startdatum || selection[0]?.startdatum);
+  const endIso = _normalizeTripDate(meta.endIso || meta.raw.end || meta.raw.eind || meta.raw.einddatum || selection[selection.length - 1]?.einddatum);
+
+  const planning = _computePlanningDataForEvents(selection, startIso, endIso);
+  if (!planning.ok) {
+    showAlert(planning.error || 'Kan planning niet berekenen.', 'error');
+    return;
+  }
+
+  const data = planning.data;
+  const busKey = meta.bus || meta.raw.bus || (data.busPlans[0]?.bus || 'VOLENDAM');
+  const busPlan = data.busPlans.find(plan => plan.bus === busKey) || data.busPlans[0];
+  if (!busPlan) {
+    showAlert('Geen busplanning gevonden om op te slaan.', 'warning');
+    return;
+  }
+
+  const savePromises = [];
+  data.plannedEvents.forEach(entry => {
+    const event = entry.evt || (db.evenementen || []).find(ev => ev?.id === entry.eventId);
+    if (!event) return;
+    if (!event.planning) event.planning = {};
+    const plan = entry.plan || {};
+    const hasPieces = Object.values(plan).some(value => Number(value) > 0);
+    if (hasPieces) {
+      const totals = _cheeseTotalsFromPlan(plan);
+      event.planning.cheeseEstimate = {
+        ...totals,
+        categories: { ...totals },
+        products: { ...plan }
+      };
+    } else if (event.planning && event.planning.cheeseEstimate) {
+      delete event.planning.cheeseEstimate;
+    }
+    savePromises.push(saveEvent(event.id));
+  });
+
+  try {
+    await Promise.all(savePromises);
+  } catch (err) {
+    console.warn('[POS] Evenementen opslaan faalde', err);
+    showAlert('Opslaan van evenementen is deels mislukt.', 'error');
+  }
+
+  const nowIso = new Date().toISOString();
+  const updatedTrip = _convertPlanToTrip(busPlan, {
+    selectionStart: startIso,
+    selectionEnd: endIso,
+    periodLabel: data.periodLabel
+  }) || {};
+
+  const mergedTrip = {
+    ...meta.raw,
+    ...updatedTrip,
+    id: meta.raw.id || updatedTrip.id || _generateTripId(),
+    bus: busPlan.bus || meta.raw.bus,
+    createdAt: meta.raw.createdAt || updatedTrip.createdAt || nowIso,
+    updatedAt: nowIso,
+    status: updatedTrip.status || meta.raw.status || 'planned',
+    state: updatedTrip.state || meta.raw.state || 'planned'
+  };
+
+  if (!Array.isArray(db.reizen)) {
+    db.reizen = [];
+  }
+  const idx = db.reizen.findIndex(trip => trip.id === mergedTrip.id);
+  if (idx >= 0) {
+    db.reizen[idx] = { ...db.reizen[idx], ...mergedTrip };
+  } else {
+    db.reizen.push(mergedTrip);
+  }
+
+  const saved = await saveReizen();
+  if (!saved) {
+    showAlert('Opslaan van reisplanning mislukt.', 'error');
+    return;
+  }
+
+  showAlert('Reisplanning geactualiseerd.', 'success');
+  closeAllModals();
+  const refreshed = _buildTripDisplay(mergedTrip);
+  if (refreshed) {
+    _openTripDetails(refreshed);
+  } else {
+    openReisPlannerModal();
+  }
+}
+
 function resolveContainer(container) {
   if (container instanceof HTMLElement) return container;
   if (typeof container === 'string') return document.querySelector(container);
@@ -211,13 +775,25 @@ function injectInlineStyles() {
   const css = `
     .reis-grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));}
     .reis-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.6rem;}
-    .reis-list li{background:#f9fafb;border-radius:12px;padding:.75rem .9rem;display:flex;flex-direction:column;gap:.25rem;}
+    .reis-list li{margin:0;padding:0;}
+    .reis-item{background:#f9fafb;border-radius:12px;padding:.75rem .9rem;display:flex;flex-direction:column;gap:.35rem;border:none;width:100%;text-align:left;cursor:pointer;font:inherit;color:inherit;transition:background .2s ease,transform .2s ease;}
+    .reis-item:hover{background:#f1f5f9;transform:translateY(-1px);}
+    .reis-item:focus-visible{outline:3px solid rgba(42,150,38,.35);outline-offset:2px;}
     .reis-trip-section{margin-top:.75rem;display:flex;flex-direction:column;gap:.4rem;}
     .reis-trip-section:first-of-type{margin-top:.4rem;}
     .reis-subtitle{margin:0;color:#1f7a2e;font-weight:800;font-size:1rem;}
     .reis-title{font-weight:800;color:#194a1f;}
     .reis-meta{font-size:.85rem;color:#4b5563;}
+    .reis-amount{font-size:.85rem;font-weight:700;color:#1f2937;}
     .reis-notes{font-size:.8rem;color:#6b7280;font-style:italic;}
+    .reis-badges{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;}
+    .reis-status{display:inline-flex;align-items:center;gap:.35rem;font-size:.78rem;font-weight:700;padding:.2rem .55rem;border-radius:999px;background:rgba(42,150,38,.08);color:#1f7a2e;}
+    .reis-status--warn{background:rgba(198,40,40,.1);color:#c62828;}
+    .reis-trip-section .reis-item{background:#fff;border:1px solid rgba(15,23,42,.08);}
+    .reis-detail-grid{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:.4rem 0;}
+    .reis-detail-grid div{display:flex;flex-direction:column;gap:.15rem;font-size:.82rem;color:#374151;}
+    .reis-detail-grid strong{font-size:.72rem;font-weight:800;text-transform:uppercase;color:#1f7a2e;}
+    .reis-inline-badge{display:inline-flex;align-items:center;gap:.35rem;font-size:.75rem;font-weight:700;padding:.2rem .55rem;border-radius:999px;background:rgba(15,23,42,.08);color:#1f2937;}
   `;
   const style = document.createElement('style');
   style.id = 'reisplanner-inline-styles';
@@ -960,6 +1536,289 @@ function _wizardVoorraadStap2(aStart, aEnd, selectie){
   });
 }
 
+function _computePlanningDataForEvents(eventsInput, aStart, aEnd, options = {}) {
+  const events = Array.isArray(eventsInput)
+    ? eventsInput.filter(item => item && (item.evt || item.eventId))
+    : [];
+  if (!events.length) {
+    return { ok: false, error: 'Geen evenementen geselecteerd voor de kaasplanning.' };
+  }
+
+  const products = (db.producten || [])
+    .filter(p => CHEESE_TYPES.includes(String(p.type || '').toUpperCase()))
+    .map(p => ({ ...p, type: String(p.type || '').toUpperCase() }));
+
+  if (!products.length) {
+    return { ok: false, error: 'Geen kaasproducten gevonden om te plannen.' };
+  }
+
+  const productMeta = {};
+  const typeGroups = CHEESE_TYPES.reduce((acc, type) => {
+    acc[type] = [];
+    return acc;
+  }, {});
+  products.forEach(prod => {
+    productMeta[prod.naam] = {
+      type: prod.type,
+      capacity: _capacity(prod.naam),
+      usd: Number(prod.usd) || 0,
+      eur: Number(prod.eur) || 0
+    };
+    typeGroups[prod.type].push(prod.naam);
+  });
+
+  const weights = _normalizeProductWeights(products);
+  const bufferFactor = Number(options.bufferFactor) > 0 ? Number(options.bufferFactor) : BUFFER_FACTOR;
+  const periodLabel = `${_fmt(aStart)} → ${_fmt(aEnd)}`;
+
+  const plannedEvents = events.map(entry => {
+    const sourceEvent = entry.evt || (db.evenementen || []).find(ev => ev?.id === entry.eventId);
+    const baseBus = entry.bus || sourceEvent?.bus || 'VOLENDAM';
+    const budget = Number(entry.bedrag) || 0;
+
+    const directPlan = {};
+    if (entry.plan && typeof entry.plan === 'object') {
+      Object.entries(entry.plan).forEach(([product, qty]) => {
+        const value = Math.max(0, Math.round(Number(qty) || 0));
+        if (value) directPlan[product] = value;
+      });
+    }
+
+    let plan = { ...directPlan };
+    if (!Object.keys(plan).length && entry.cheeseEstimate && typeof entry.cheeseEstimate === 'object') {
+      plan = _buildEventPlan({ cheeseEstimate: entry.cheeseEstimate }, products, weights, typeGroups, 1);
+    }
+    if (!Object.keys(plan).length && sourceEvent?.planning?.cheeseEstimate) {
+      plan = _buildEventPlan({ cheeseEstimate: sourceEvent.planning.cheeseEstimate }, products, weights, typeGroups, 1);
+    }
+    if (!Object.keys(plan).length) {
+      plan = _buildEventPlan({ ...entry, bedrag: budget }, products, weights, typeGroups, bufferFactor);
+    }
+
+    const normalizedPlan = {};
+    Object.entries(plan || {}).forEach(([product, qty]) => {
+      const amount = Math.max(0, Math.round(Number(qty) || 0));
+      if (amount) normalizedPlan[product] = amount;
+    });
+
+    const demand = { ...normalizedPlan };
+    const totalPieces = Object.values(normalizedPlan).reduce((sum, val) => sum + (Number(val) || 0), 0);
+
+    return {
+      ...entry,
+      evt: sourceEvent,
+      bus: baseBus,
+      bedrag: budget,
+      plan: normalizedPlan,
+      demand,
+      totalPieces
+    };
+  });
+
+  const totalBudget = plannedEvents.reduce((sum, evt) => sum + (Number(evt.bedrag) || 0), 0);
+  const totalNeeded = {};
+  const totalByType = { BG: 0, ROOK: 0, GEIT: 0 };
+  const eventsByBus = {};
+
+  plannedEvents.forEach(evt => {
+    const busKey = evt.bus || 'VOLENDAM';
+    if (!eventsByBus[busKey]) {
+      eventsByBus[busKey] = { bus: busKey, events: [] };
+    }
+    eventsByBus[busKey].events.push(evt);
+
+    Object.entries(evt.demand || evt.plan || {}).forEach(([product, qty]) => {
+      const amount = Math.max(0, Math.round(Number(qty) || 0));
+      if (!amount) return;
+      totalNeeded[product] = (totalNeeded[product] || 0) + amount;
+      const type = productMeta[product]?.type;
+      if (type && type in totalByType) {
+        totalByType[type] += amount;
+      }
+    });
+  });
+
+  const stockOriginal = _cloneStock(db.voorraad || {});
+  const centralKey = _detectCentralLocation(stockOriginal);
+  const stockWorking = _cloneStock(stockOriginal);
+  const orderNeeds = {};
+
+  const busPlans = Object.values(eventsByBus).map(plan => {
+    const load = {};
+    const busStock = stockWorking[plan.bus] = stockWorking[plan.bus] || {};
+    const centralStock = stockWorking[centralKey] = stockWorking[centralKey] || {};
+    const sortedEvents = plan.events.slice().sort((a, b) => {
+      const aDate = a.startdatum || a.start || '';
+      const bDate = b.startdatum || b.start || '';
+      return new Date(aDate) - new Date(bDate);
+    });
+    const eventDetails = sortedEvents.map(evt => ({
+      naam: evt.naam,
+      start: evt.startdatum || evt.start,
+      eind: evt.einddatum || evt.eind,
+      loads: {},
+      totalDemand: 0,
+      totalLoaded: 0
+    }));
+
+    sortedEvents.forEach((evt, index) => {
+      const demandSource = evt.demand && typeof evt.demand === 'object' ? evt.demand : (evt.plan || {});
+      const planSource = evt.plan && typeof evt.plan === 'object' ? evt.plan : {};
+      const detail = eventDetails[index];
+      const productKeys = new Set([...Object.keys(demandSource || {}), ...Object.keys(planSource || {})]);
+
+      productKeys.forEach(product => {
+        const capacity = productMeta[product]?.capacity || 1;
+        const demand = Math.max(0, Math.round(Number(demandSource?.[product] || 0)));
+        let plannedLoad = Math.max(0, Math.round(Number(planSource?.[product] || 0)));
+        const stockBeforeLoad = Math.max(0, Math.round(Number(busStock[product] || 0)));
+        let addedFromCentral = 0;
+        let addedFromOrder = 0;
+
+        if (plannedLoad === 0 && demand > stockBeforeLoad) {
+          const deficit = demand - stockBeforeLoad;
+          plannedLoad = Math.ceil(deficit / capacity) * capacity;
+        }
+
+        if (plannedLoad > 0) {
+          const availableCentral = Math.max(0, Math.round(Number(centralStock[product] || 0)));
+          addedFromCentral = Math.min(plannedLoad, availableCentral);
+          if (addedFromCentral) {
+            centralStock[product] = availableCentral - addedFromCentral;
+          }
+          const remainingLoad = plannedLoad - addedFromCentral;
+          if (remainingLoad > 0) {
+            addedFromOrder = remainingLoad;
+            orderNeeds[product] = (orderNeeds[product] || 0) + remainingLoad;
+          }
+          busStock[product] = stockBeforeLoad + plannedLoad;
+        } else {
+          busStock[product] = stockBeforeLoad;
+        }
+
+        const availableAfterLoad = Math.max(0, Math.round(Number(busStock[product] || 0)));
+        const used = Math.min(availableAfterLoad, demand);
+        const usedFromExisting = Math.min(stockBeforeLoad, used);
+        busStock[product] = availableAfterLoad - used;
+
+        if (!load[product]) {
+          load[product] = {
+            needed: 0,
+            fromBus: 0,
+            fromCentral: 0,
+            fromOrder: 0,
+            capacity
+          };
+        }
+
+        load[product].needed += demand;
+        load[product].fromBus += usedFromExisting;
+        load[product].fromCentral += addedFromCentral;
+        load[product].fromOrder += addedFromOrder;
+
+        if (plannedLoad > 0 || demand > 0) {
+          detail.loads[product] = {
+            demand,
+            loaded: plannedLoad,
+            fromBus: usedFromExisting,
+            fromCentral: addedFromCentral,
+            fromOrder: addedFromOrder,
+            remaining: busStock[product]
+          };
+          detail.totalDemand += demand;
+          detail.totalLoaded += plannedLoad;
+        }
+      });
+    });
+
+    return { ...plan, events: sortedEvents, load, eventDetails, centralKey };
+  });
+
+  const totalStockAll = _sumStock(stockOriginal);
+  const stockByType = { BG: 0, ROOK: 0, GEIT: 0 };
+  Object.entries(totalStockAll).forEach(([product, qty]) => {
+    const type = productMeta[product]?.type;
+    if (type && type in stockByType) {
+      stockByType[type] += Math.max(0, Number(qty) || 0);
+    }
+  });
+
+  const demandRows = products
+    .map(prod => {
+      const needed = Math.max(0, Math.round(Number(totalNeeded[prod.naam] || 0)));
+      const available = Math.max(0, Math.round(Number(totalStockAll[prod.naam] || 0)));
+      const shortage = Math.max(0, needed - available);
+      const breakdown = _crateBreakdown(needed, productMeta[prod.naam].capacity);
+      return {
+        product: prod.naam,
+        type: prod.type,
+        needed,
+        available,
+        shortage,
+        capacity: productMeta[prod.naam].capacity,
+        breakdown
+      };
+    })
+    .sort((a, b) => a.product.localeCompare(b.product));
+
+  const orderRows = demandRows
+    .filter(row => row.shortage > 0)
+    .map(row => {
+      const meta = productMeta[row.product] || {};
+      const pricing = _resolveUnitPrice(meta);
+      const supplier = _supplierForProduct(row.product);
+      const cost = pricing.price > 0 ? pricing.price * row.shortage : 0;
+      return {
+        ...row,
+        orderBreakdown: _crateBreakdown(row.shortage, row.capacity),
+        supplier,
+        unitPrice: pricing.price,
+        priceCurrency: pricing.currency,
+        cost,
+        costLabel: cost > 0 ? formatCurrencyValue(cost, pricing.currency) : 'n.t.b.'
+      };
+    });
+
+  const totalDemandPieces = Object.values(totalNeeded).reduce((sum, val) => sum + (Number(val) || 0), 0);
+  const totalCentralPieces = busPlans.reduce((sum, plan) => {
+    const entries = Object.values(plan.load || {});
+    return sum + entries.reduce((acc, item) => acc + (Number(item.fromCentral) || 0), 0);
+  }, 0);
+  const totalOrderPieces = Object.values(orderNeeds).reduce((sum, val) => sum + (Number(val) || 0), 0);
+  const totalBusUsage = busPlans.reduce((sum, plan) => {
+    const entries = Object.values(plan.load || {});
+    return sum + entries.reduce((acc, item) => acc + (Number(item.fromBus) || 0), 0);
+  }, 0);
+
+  return {
+    ok: true,
+    data: {
+      products,
+      productMeta,
+      typeGroups,
+      weights,
+      plannedEvents,
+      totalBudget,
+      totalByType,
+      totalNeeded,
+      busPlans,
+      orderNeeds,
+      totalStockAll,
+      stockByType,
+      demandRows,
+      orderRows,
+      periodLabel,
+      centralKey,
+      selectionStart: aStart,
+      selectionEnd: aEnd,
+      totalDemandPieces,
+      totalCentralPieces,
+      totalBusUsage,
+      totalOrderPieces
+    }
+  };
+}
+
 function _rebalanceCratesByBus(eventStates, orderedProducts, productMeta){
   if (!Array.isArray(eventStates) || !eventStates.length) return;
   const groups = {};
@@ -1030,230 +1889,36 @@ function _wizardVoorraadStap3(aStart, aEnd, omzetData){
     return;
   }
 
-  const products = (db.producten||[])
-    .filter(p => CHEESE_TYPES.includes(String(p.type||'').toUpperCase()))
-    .map(p => ({ ...p, type: String(p.type||'').toUpperCase() }));
-
-  if (!products.length) {
-    showAlert('Geen kaasproducten gevonden om te plannen.', 'error');
+  const planning = _computePlanningDataForEvents(events, aStart, aEnd);
+  if (!planning.ok) {
+    showAlert(planning.error || 'Kan planning niet berekenen.', 'error');
     return;
   }
 
-  const productMeta = {};
-  const typeGroups = {};
-  products.forEach(prod => {
-    productMeta[prod.naam] = {
-      type: prod.type,
-      capacity: _capacity(prod.naam),
-      usd: Number(prod.usd) || 0,
-      eur: Number(prod.eur) || 0
-    };
-    if (!typeGroups[prod.type]) typeGroups[prod.type] = [];
-    typeGroups[prod.type].push(prod.naam);
-  });
-
-  const weights = _normalizeProductWeights(products);
-  const bufferFactor = BUFFER_FACTOR;
-
-  const plannedEvents = events.map(entry => {
-    let plan = {};
-    if (entry.plan && typeof entry.plan === 'object') {
-      Object.entries(entry.plan).forEach(([product, qty]) => {
-        const amount = Math.max(0, Math.round(Number(qty)||0));
-        if (amount) plan[product] = amount;
-      });
-    }
-    if (!Object.keys(plan).length && entry.cheeseEstimate && typeof entry.cheeseEstimate === 'object') {
-      plan = _buildEventPlan({ cheeseEstimate: entry.cheeseEstimate }, products, weights, typeGroups, 1);
-    }
-    if (!Object.keys(plan).length) {
-      plan = _buildEventPlan(entry, products, weights, typeGroups, bufferFactor);
-    }
-    const totalPieces = Object.values(plan).reduce((sum, val) => sum + (Number(val)||0), 0);
-    return { ...entry, plan, totalPieces };
-  });
-
-  const totalBudget = plannedEvents.reduce((sum, evt) => sum + (Number(evt.bedrag)||0), 0);
-  const totalNeeded = {};
-  const totalByType = { BG:0, ROOK:0, GEIT:0 };
-  const eventsByBus = {};
-
-  plannedEvents.forEach(evt => {
-    const busKey = evt.bus || 'VOLENDAM';
-    if (!eventsByBus[busKey]) {
-      eventsByBus[busKey] = { bus: busKey, events: [] };
-    }
-    eventsByBus[busKey].events.push(evt);
-    const demandSource = (evt.demand && typeof evt.demand === 'object') ? evt.demand : (evt.plan || {});
-    Object.entries(demandSource).forEach(([product, qty]) => {
-      const amount = Math.max(0, Math.round(Number(qty)||0));
-      if (!amount) return;
-      totalNeeded[product] = (totalNeeded[product]||0) + amount;
-      const type = productMeta[product]?.type;
-      if (type && type in totalByType) {
-        totalByType[type] += amount;
-      }
-    });
-  });
-
-  const stockOriginal = _cloneStock(db.voorraad || {});
-  const centralKey = _detectCentralLocation(stockOriginal);
-  const stockWorking = _cloneStock(stockOriginal);
-  const orderNeeds = {};
-
-  const busPlans = Object.values(eventsByBus).map(plan => {
-    const load = {};
-    const busStock = stockWorking[plan.bus] = stockWorking[plan.bus] || {};
-    const centralStock = stockWorking[centralKey] = stockWorking[centralKey] || {};
-    const sortedEvents = plan.events.slice().sort((a,b)=>{
-      const aDate = a.startdatum || a.start || '';
-      const bDate = b.startdatum || b.start || '';
-      return new Date(aDate) - new Date(bDate);
-    });
-    const eventDetails = sortedEvents.map(evt => ({
-      naam: evt.naam,
-      start: evt.startdatum || evt.start,
-      eind: evt.einddatum || evt.eind,
-      loads: {},
-      totalDemand: 0,
-      totalLoaded: 0
-    }));
-
-    sortedEvents.forEach((evt, index) => {
-      const demandSource = (evt.demand && typeof evt.demand === 'object') ? evt.demand : (evt.plan || {});
-      const planSource = (evt.plan && typeof evt.plan === 'object') ? evt.plan : {};
-      const detail = eventDetails[index];
-      const productKeys = new Set([...Object.keys(demandSource || {}), ...Object.keys(planSource || {})]);
-
-      productKeys.forEach(product => {
-        const capacity = productMeta[product]?.capacity || 1;
-        const demand = Math.max(0, Math.round(Number(demandSource?.[product] || 0)));
-        let plannedLoad = Math.max(0, Math.round(Number(planSource?.[product] || 0)));
-        const stockBeforeLoad = Math.max(0, Math.round(Number(busStock[product] || 0)));
-        let addedFromCentral = 0;
-        let addedFromOrder = 0;
-
-        if (plannedLoad === 0 && demand > stockBeforeLoad) {
-          const deficit = demand - stockBeforeLoad;
-          plannedLoad = Math.ceil(deficit / capacity) * capacity;
-        }
-
-        if (plannedLoad > 0) {
-          const availableCentral = Math.max(0, Math.round(Number(centralStock[product] || 0)));
-          addedFromCentral = Math.min(plannedLoad, availableCentral);
-          if (addedFromCentral) {
-            centralStock[product] = availableCentral - addedFromCentral;
-          }
-          const remainingLoad = plannedLoad - addedFromCentral;
-          if (remainingLoad > 0) {
-            addedFromOrder = remainingLoad;
-            orderNeeds[product] = (orderNeeds[product]||0) + remainingLoad;
-          }
-          busStock[product] = stockBeforeLoad + plannedLoad;
-        } else {
-          busStock[product] = stockBeforeLoad;
-        }
-
-        const availableAfterLoad = Math.max(0, Math.round(Number(busStock[product] || 0)));
-        const used = Math.min(availableAfterLoad, demand);
-        const usedFromExisting = Math.min(stockBeforeLoad, used);
-        busStock[product] = availableAfterLoad - used;
-
-        if (!load[product]) {
-          load[product] = {
-            needed: 0,
-            fromBus: 0,
-            fromCentral: 0,
-            fromOrder: 0,
-            capacity
-          };
-        }
-
-        load[product].needed += demand;
-        load[product].fromBus += usedFromExisting;
-        load[product].fromCentral += addedFromCentral;
-        load[product].fromOrder += addedFromOrder;
-
-        if (plannedLoad > 0 || demand > 0) {
-          detail.loads[product] = {
-            demand,
-            loaded: plannedLoad,
-            fromBus: usedFromExisting,
-            fromCentral: addedFromCentral,
-            fromOrder: addedFromOrder,
-            remaining: busStock[product]
-          };
-          detail.totalDemand += demand;
-          detail.totalLoaded += plannedLoad;
-        }
-      });
-    });
-
-    return { ...plan, events: sortedEvents, load, eventDetails, centralKey };
-  });
-
-  const totalStockAll = _sumStock(stockOriginal);
-  const stockByType = { BG:0, ROOK:0, GEIT:0 };
-  Object.entries(totalStockAll).forEach(([product, qty]) => {
-    const type = productMeta[product]?.type;
-    if (type && type in stockByType) {
-      stockByType[type] += Math.max(0, Number(qty)||0);
-    }
-  });
-
-  const demandRows = products
-    .map(prod => {
-      const needed = Math.max(0, Math.round(Number(totalNeeded[prod.naam]||0)));
-      const available = Math.max(0, Math.round(Number(totalStockAll[prod.naam]||0)));
-      const shortage = Math.max(0, needed - available);
-      const breakdown = _crateBreakdown(needed, productMeta[prod.naam].capacity);
-      return {
-        product: prod.naam,
-        type: prod.type,
-        needed,
-        available,
-        shortage,
-        capacity: productMeta[prod.naam].capacity,
-        breakdown
-      };
-    })
-    .sort((a,b)=> a.product.localeCompare(b.product));
-
-  const orderRows = demandRows
-    .filter(row => row.shortage > 0)
-    .map(row => {
-      const meta = productMeta[row.product] || {};
-      const pricing = _resolveUnitPrice(meta);
-      const supplier = _supplierForProduct(row.product);
-      const cost = pricing.price > 0 ? pricing.price * row.shortage : 0;
-      return {
-        ...row,
-        orderBreakdown: _crateBreakdown(row.shortage, row.capacity),
-        supplier,
-        unitPrice: pricing.price,
-        priceCurrency: pricing.currency,
-        cost,
-        costLabel: cost > 0 ? formatCurrencyValue(cost, pricing.currency) : 'n.t.b.'
-      };
-    });
-
-  const periodLabel = `${_fmt(aStart)} → ${_fmt(aEnd)}`;
+  const {
+    products,
+    productMeta,
+    plannedEvents,
+    totalBudget,
+    totalByType,
+    totalNeeded,
+    busPlans,
+    demandRows,
+    orderRows,
+    stockByType,
+    totalStockAll,
+    orderNeeds,
+    periodLabel,
+    totalDemandPieces,
+    totalCentralPieces,
+    totalBusUsage,
+    totalOrderPieces
+  } = planning.data;
 
   _modal(()=>{
     const box=document.createElement('div');
     box.appendChild(_h2(`📦 Voorraadplanning (${periodLabel})`));
     box.appendChild(_p(`${plannedEvents.length} evenementen, verwachte omzet $${totalBudget.toFixed(2)}.`));
-
-    const totalDemandPieces = Object.values(totalNeeded).reduce((sum, val) => sum + (Number(val)||0), 0);
-    const totalCentralPieces = busPlans.reduce((sum, plan) => {
-      const entries = Object.values(plan.load || {});
-      return sum + entries.reduce((acc, item) => acc + (Number(item.fromCentral)||0), 0);
-    }, 0);
-    const totalOrderPieces = Object.values(orderNeeds).reduce((sum, val) => sum + (Number(val)||0), 0);
-    const totalBusUsage = busPlans.reduce((sum, plan) => {
-      const entries = Object.values(plan.load || {});
-      return sum + entries.reduce((acc, item) => acc + (Number(item.fromBus)||0), 0);
-    }, 0);
 
     const fmtPieces = (value) => Number(value||0).toLocaleString('nl-NL');
 
