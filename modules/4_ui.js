@@ -2249,6 +2249,14 @@ function renderSupplementListItems(list) {
 }
 
 function openStartEventModal(ref) {
+    openEventCheeseCountModal(ref, 'start');
+}
+
+function openCloseEventModal(ref) {
+    openEventCheeseCountModal(ref, 'end');
+}
+
+function openEventCheeseCountModal(ref, mode) {
     const event = findEventByRef(ref);
     if (!event) {
         showAlert('Evenement niet gevonden.', 'error');
@@ -2259,43 +2267,86 @@ function openStartEventModal(ref) {
         return;
     }
 
-    if (event?.kaasTelling?.start) {
+    const telling = event.kaasTelling || {};
+    const hasStart = Boolean(telling.start);
+    if (mode === 'start' && hasStart) {
         showAlert('De starttelling is al opgeslagen. Gebruik "Aanvulling toevoegen" voor extra voorraad.', 'warning');
         return;
     }
+    if (mode === 'end' && !hasStart) {
+        showAlert('Starttelling ontbreekt. Vul eerst de starttelling in.', 'warning');
+        return;
+    }
 
-    const startTotals = toCheeseTotals(event?.kaasTelling?.start);
-    const planning = event?.planning || null;
-    const planTotals = toCheeseTotals(planning?.cheeseEstimate);
-    const planHasValues = Object.values(planTotals).some(val => Number(val) > 0);
-    const planTimestamp = planning?.calculatedAt ? formatDateTime(planning.calculatedAt) : '';
-    const planTurnoverParts = [];
-    if (planning?.expectedTurnover?.usd) planTurnoverParts.push(formatCurrency(toSafeNumber(planning.expectedTurnover.usd), 'USD'));
-    if (planning?.expectedTurnover?.eur) planTurnoverParts.push(formatCurrency(toSafeNumber(planning.expectedTurnover.eur), 'EUR'));
-    const hasStoredStart = Boolean(event?.kaasTelling?.start);
-    const storedSnapshot = sanitizeProductSnapshot(event?.kaasTelling?.startProducts);
+    const startTotals = toCheeseTotals(telling.start);
+    const startSnapshot = sanitizeProductSnapshot(telling.startProducts);
     const busSnapshot = sanitizeProductSnapshot(getBusCheeseProductSnapshot(event?.bus));
-    const planSnapshot = planHasValues ? distributeCheeseTotalsToProducts(planTotals) : {};
 
-    let defaultSnapshot = storedSnapshot;
-    let sourceLabel = 'de busvoorraad';
-    if (Object.keys(storedSnapshot).length) {
-        sourceLabel = 'de eerder opgeslagen starttelling';
-    } else if (hasStoredStart) {
-        if (Object.keys(busSnapshot).length) {
-            defaultSnapshot = rebalanceSnapshotToTotals(busSnapshot, startTotals);
+    let planHasValues = false;
+    let planSnapshot = {};
+    let planTotals = { BG: 0, ROOK: 0, GEIT: 0 };
+    let planTimestamp = '';
+    let planTurnoverParts = [];
+    if (mode === 'start') {
+        const planning = event?.planning || null;
+        planTotals = toCheeseTotals(planning?.cheeseEstimate);
+        planHasValues = Object.values(planTotals).some(val => Number(val) > 0);
+        planTimestamp = planning?.calculatedAt ? formatDateTime(planning.calculatedAt) : '';
+        planTurnoverParts = [];
+        if (planning?.expectedTurnover?.usd) planTurnoverParts.push(formatCurrency(toSafeNumber(planning.expectedTurnover.usd), 'USD'));
+        if (planning?.expectedTurnover?.eur) planTurnoverParts.push(formatCurrency(toSafeNumber(planning.expectedTurnover.eur), 'EUR'));
+        planSnapshot = planHasValues ? distributeCheeseTotalsToProducts(planTotals) : {};
+    }
+
+    const endTotals = toCheeseTotals(telling.end);
+    const storedEndSnapshot = sanitizeProductSnapshot(telling.endProducts);
+    const computedEndSnapshot = computeEventEndProductSnapshot(event, telling.end, telling.endProducts);
+
+    let defaultSnapshot = {};
+    let sourceLabel = 'de starttelling';
+    if (mode === 'start') {
+        const storedSnapshot = sanitizeProductSnapshot(telling.startProducts);
+        if (Object.keys(storedSnapshot).length) {
+            defaultSnapshot = storedSnapshot;
+            sourceLabel = 'de eerder opgeslagen starttelling';
+        } else if (hasStart) {
+            if (Object.keys(busSnapshot).length) {
+                defaultSnapshot = rebalanceSnapshotToTotals(busSnapshot, startTotals);
+            } else {
+                defaultSnapshot = distributeCheeseTotalsToProducts(startTotals);
+            }
+            sourceLabel = 'de eerder opgeslagen starttelling';
+        } else if (Object.keys(busSnapshot).length) {
+            defaultSnapshot = busSnapshot;
+            sourceLabel = 'de actuele busvoorraad';
+        } else if (planHasValues) {
+            defaultSnapshot = planSnapshot;
+            sourceLabel = 'de geplande voorraad';
         } else {
-            defaultSnapshot = distributeCheeseTotalsToProducts(startTotals);
+            defaultSnapshot = {};
+            sourceLabel = 'een lege telling (vul handmatig in)';
         }
-        sourceLabel = 'de eerder opgeslagen starttelling';
-    } else if (Object.keys(busSnapshot).length) {
-        defaultSnapshot = busSnapshot;
-        sourceLabel = 'de actuele busvoorraad';
-    } else if (planHasValues) {
-        defaultSnapshot = planSnapshot;
-        sourceLabel = 'de geplande voorraad';
     } else {
-        defaultSnapshot = {};
+        const hasEndValues = Object.values(endTotals).some(val => Number(val) > 0);
+        if (Object.keys(storedEndSnapshot).length) {
+            defaultSnapshot = storedEndSnapshot;
+            sourceLabel = 'de laatst opgeslagen eindtelling';
+        } else if (hasEndValues && Object.keys(computedEndSnapshot).length) {
+            defaultSnapshot = computedEndSnapshot;
+            sourceLabel = 'de laatst opgeslagen eindtelling';
+        } else if (Object.keys(startSnapshot).length) {
+            defaultSnapshot = startSnapshot;
+            sourceLabel = 'de starttelling';
+        } else if (Object.keys(busSnapshot).length) {
+            defaultSnapshot = busSnapshot;
+            sourceLabel = 'de busvoorraad';
+        } else if (Object.values(startTotals).some(val => Number(val) > 0)) {
+            defaultSnapshot = distributeCheeseTotalsToProducts(startTotals);
+            sourceLabel = 'de starttelling';
+        } else {
+            defaultSnapshot = {};
+            sourceLabel = 'een lege telling (vul handmatig in)';
+        }
     }
 
     const cheeseProducts = getCheeseProductList();
@@ -2303,10 +2354,19 @@ function openStartEventModal(ref) {
     const { box, close } = createModal();
     box.classList.add('event-modal');
     ensureStartProductStyles();
+    const heading = mode === 'start' ? 'Starttelling' : 'Eindtelling';
+    const submitClass = mode === 'start' ? 'primary' : 'danger';
+    const submitLabel = mode === 'start' ? 'Opslaan' : 'Afronden';
+    const busyLabel = mode === 'start' ? 'Opslaan…' : 'Afronden…';
+    const startTotalsNote = hasStart
+        ? `<p class="event-modal-note">Starttelling: BG ${escapeHtml(String(startTotals.BG))}, ROOK ${escapeHtml(String(startTotals.ROOK))}, GEIT ${escapeHtml(String(startTotals.GEIT))}</p>`
+        : '';
+
     box.innerHTML = `
         <button class="modal-close" aria-label="Sluiten">✕</button>
-        <h2>Starttelling — ${escapeHtml(event?.naam || '')}</h2>
+        <h2>${heading} — ${escapeHtml(event?.naam || '')}</h2>
         <p class="event-modal-sub">Bus: ${escapeHtml(event?.bus || 'Onbekend')}</p>
+        ${mode === 'end' ? startTotalsNote : ''}
         <form class="event-count-form" data-event-id="${escapeHtml(String(event.id))}" data-mode="products">
             <div class="event-product-grid">
                 ${cheeseProducts.length ? renderStartProductSections(cheeseProducts, defaultSnapshot) : '<p class="event-modal-note">Geen kaasproducten gevonden in de catalogus.</p>'}
@@ -2319,12 +2379,12 @@ function openStartEventModal(ref) {
             </div>
             <div class="event-count-actions">
                 <button type="button" class="event-card-btn ghost" data-role="cancel">Annuleren</button>
-                ${!hasStoredStart && planHasValues ? '<button type="button" class="event-card-btn secondary" data-role="apply-plan">Gebruik planning</button>' : ''}
-                <button type="submit" class="event-card-btn primary">Opslaan</button>
+                ${mode === 'start' && planHasValues ? '<button type="button" class="event-card-btn secondary" data-role="apply-plan">Gebruik planning</button>' : ''}
+                <button type="submit" class="event-card-btn ${submitClass}">${submitLabel}</button>
             </div>
         </form>
         <p class="event-modal-note">Vooringevuld met ${escapeHtml(sourceLabel)}.</p>
-        ${!hasStoredStart && planHasValues
+        ${mode === 'start' && planHasValues
             ? `<p class="event-modal-note">Planning: BG ${escapeHtml(planTotals.BG.toLocaleString('nl-NL'))}, ROOK ${escapeHtml(planTotals.ROOK.toLocaleString('nl-NL'))}, GEIT ${escapeHtml(planTotals.GEIT.toLocaleString('nl-NL'))}${planTurnoverParts.length ? ` — ${escapeHtml(planTurnoverParts.join(' • '))}` : ''}${planTimestamp ? ` (${escapeHtml(planTimestamp)})` : ''}.</p>`
             : ''}
     `;
@@ -2355,11 +2415,12 @@ function openStartEventModal(ref) {
         });
     }
 
-    if (!hasStoredStart && planHasValues) {
+    if (mode === 'start' && planHasValues) {
         form?.querySelector('[data-role="apply-plan"]')?.addEventListener('click', () => {
             applyCheeseSnapshotToForm(form, planSnapshot);
         });
     }
+
     form?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const cheeseData = collectCheeseProductData(form);
@@ -2367,30 +2428,65 @@ function openStartEventModal(ref) {
         const submitBtn = form.querySelector('button[type="submit"]');
         if (submitBtn) {
             submitBtn.disabled = true;
-            submitBtn.textContent = 'Opslaan…';
+            submitBtn.textContent = busyLabel;
         }
         try {
             event.kaasTelling = { ...(event.kaasTelling || {}) };
-            event.kaasTelling.start = { ...values, timestamp: new Date().toISOString() };
-            event.kaasTelling.startProducts = sanitizeProductSnapshot(cheeseData.products);
-            delete event.kaasTelling.end;
-            delete event.kaasTelling.sales;
-            event.state = 'active';
-            event.afgerond = false;
-            const { saveEvent } = await import('./3_data.js');
-            const ok = await saveEvent(event.id);
-            if (ok === false) throw new Error('save-failed');
-            showAlert('Starttelling opgeslagen.', 'success');
-            close();
-            renderEventCards();
-            store.emit?.('events:updated', { eventId: event.id, action: 'start' });
+            if (mode === 'start') {
+                event.kaasTelling.start = { ...values, timestamp: new Date().toISOString() };
+                event.kaasTelling.startProducts = sanitizeProductSnapshot(cheeseData.products);
+                delete event.kaasTelling.end;
+                delete event.kaasTelling.sales;
+                delete event.kaasTelling.endProducts;
+                event.state = 'active';
+                event.afgerond = false;
+                const { saveEvent } = await import('./3_data.js');
+                const ok = await saveEvent(event.id);
+                if (ok === false) throw new Error('save-failed');
+                showAlert('Starttelling opgeslagen.', 'success');
+                close();
+                renderEventCards();
+                store.emit?.('events:updated', { eventId: event.id, action: 'start' });
+            } else {
+                const previousSales = event.kaasTelling?.sales
+                    ? {
+                        categories: toCheeseTotals(event.kaasTelling.sales),
+                        products: cloneProductTotals(event.kaasTelling.sales.products),
+                        total: toSafeNumber(event.kaasTelling.sales.total)
+                    }
+                    : null;
+                const productSales = computeEventProductSales(event, values);
+                const salesRecord = computeEventSalesSnapshot(event, values, productSales);
+                const endTimestamp = new Date().toISOString();
+                event.kaasTelling.end = { ...values, timestamp: endTimestamp };
+                event.kaasTelling.endProducts = sanitizeProductSnapshot(cheeseData.products);
+                if (salesRecord?.source?.end) {
+                    salesRecord.source.end.timestamp = endTimestamp;
+                }
+                event.kaasTelling.sales = salesRecord;
+                event.state = 'completed';
+                event.afgerond = true;
+                const { saveEvent } = await import('./3_data.js');
+                const ok = await saveEvent(event.id);
+                if (ok === false) throw new Error('save-failed');
+
+                await updateGlobalCheeseMix(event.id, salesRecord, previousSales);
+
+                await synchronizeEventEndStock(event, values, cheeseData.products);
+
+                showAlert('Eindtelling opgeslagen en evenement afgesloten.', 'success');
+                close();
+                renderEventCards();
+                store.emit?.('events:updated', { eventId: event.id, action: 'close' });
+            }
         } catch (err) {
-            console.error('[POS] Starttelling opslaan mislukt', err);
-            showAlert('Opslaan van starttelling mislukt.', 'error');
+            const context = mode === 'start' ? 'Starttelling' : 'Eindtelling';
+            console.error(`[POS] ${context} opslaan mislukt`, err);
+            showAlert(`Opslaan van ${mode === 'start' ? 'starttelling' : 'eindtelling'} mislukt.`, 'error');
         } finally {
             if (submitBtn) {
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'Opslaan';
+                submitBtn.textContent = submitLabel;
             }
         }
     });
@@ -2507,101 +2603,6 @@ function openSupplementModal(ref) {
             if (submitBtn) {
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Opslaan';
-            }
-        }
-    });
-}
-
-function openCloseEventModal(ref) {
-    const event = findEventByRef(ref);
-    if (!event) {
-        showAlert('Evenement niet gevonden.', 'error');
-        return;
-    }
-    if (!event.id) {
-        showAlert('Evenement mist een ID en kan niet worden opgeslagen.', 'error');
-        return;
-    }
-
-    const startTotals = toCheeseTotals(event?.kaasTelling?.start);
-    const endTotals = toCheeseTotals(event?.kaasTelling?.end);
-    const defaults = event?.kaasTelling?.end
-        ? endTotals
-        : (event?.kaasTelling?.start
-            ? startTotals
-            : getBusCheeseSnapshot(event?.bus));
-
-    const { box, close } = createModal();
-    box.classList.add('event-modal');
-    box.innerHTML = `
-        <button class="modal-close" aria-label="Sluiten">✕</button>
-        <h2>Eindtelling — ${escapeHtml(event?.naam || '')}</h2>
-        <p class="event-modal-sub">Bus: ${escapeHtml(event?.bus || 'Onbekend')}</p>
-        ${event?.kaasTelling?.start ? `<p class="event-modal-note">Starttelling: BG ${escapeHtml(String(startTotals.BG))}, ROOK ${escapeHtml(String(startTotals.ROOK))}, GEIT ${escapeHtml(String(startTotals.GEIT))}</p>` : ''}
-        <form class="event-count-form" data-event-id="${escapeHtml(String(event.id))}">
-            <div class="event-count-grid">
-                ${renderCountInput('BG', defaults.BG)}
-                ${renderCountInput('ROOK', defaults.ROOK)}
-                ${renderCountInput('GEIT', defaults.GEIT)}
-            </div>
-            <div class="event-count-actions">
-                <button type="button" class="event-card-btn ghost" data-role="cancel">Annuleren</button>
-                <button type="submit" class="event-card-btn danger">Afronden</button>
-            </div>
-        </form>
-        <p class="event-modal-note">Vooringevuld met ${event?.kaasTelling?.end ? 'de laatst opgeslagen eindtelling' : 'de starttelling'}.</p>
-    `;
-
-    box.querySelector('.modal-close')?.addEventListener('click', close);
-    box.querySelector('[data-role="cancel"]')?.addEventListener('click', close);
-
-    const form = box.querySelector('.event-count-form');
-    form?.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const values = readCheeseForm(form);
-        const submitBtn = form.querySelector('button[type="submit"]');
-        if (submitBtn) {
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Afronden…';
-        }
-        try {
-            event.kaasTelling = { ...(event.kaasTelling || {}) };
-            const previousSales = event.kaasTelling?.sales
-                ? {
-                    categories: toCheeseTotals(event.kaasTelling.sales),
-                    products: cloneProductTotals(event.kaasTelling.sales.products),
-                    total: toSafeNumber(event.kaasTelling.sales.total)
-                }
-                : null;
-            const productSales = computeEventProductSales(event, values);
-            const salesRecord = computeEventSalesSnapshot(event, values, productSales);
-            const endTimestamp = new Date().toISOString();
-            event.kaasTelling.end = { ...values, timestamp: endTimestamp };
-            if (salesRecord?.source?.end) {
-                salesRecord.source.end.timestamp = endTimestamp;
-            }
-            event.kaasTelling.sales = salesRecord;
-            event.state = 'completed';
-            event.afgerond = true;
-            const { saveEvent } = await import('./3_data.js');
-            const ok = await saveEvent(event.id);
-            if (ok === false) throw new Error('save-failed');
-
-            await updateGlobalCheeseMix(event.id, salesRecord, previousSales);
-
-            await synchronizeEventEndStock(event, values);
-
-            showAlert('Eindtelling opgeslagen en evenement afgesloten.', 'success');
-            close();
-            renderEventCards();
-            store.emit?.('events:updated', { eventId: event.id, action: 'close' });
-        } catch (err) {
-            console.error('[POS] Eindtelling opslaan mislukt', err);
-            showAlert('Opslaan van eindtelling mislukt.', 'error');
-        } finally {
-            if (submitBtn) {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Afronden';
             }
         }
     });
@@ -3512,12 +3513,12 @@ async function updateGlobalCheeseMix(eventId, newSales, previousSales = null) {
     }
 }
 
-async function synchronizeEventEndStock(event, endValues) {
+async function synchronizeEventEndStock(event, endValues, endProductsSnapshot) {
     if (!event) return;
     const busCandidate = event.bus || event.busId || event.ownerBus || null;
     if (!busCandidate) return;
 
-    const finalSnapshot = computeEventEndProductSnapshot(event, endValues);
+    const finalSnapshot = computeEventEndProductSnapshot(event, endValues, endProductsSnapshot);
 
     try {
         const [{ db, saveVoorraad }, { setVoorraadForProduct }] = await Promise.all([
@@ -3580,11 +3581,16 @@ async function synchronizeEventEndStock(event, endValues) {
     }
 }
 
-function computeEventEndProductSnapshot(event, endValues) {
+function computeEventEndProductSnapshot(event, endValues, endProductsSnapshot) {
     if (!event) return {};
     const telling = event.kaasTelling || {};
     const endTotals = toCheeseTotals(endValues || telling.end);
     const totalsHaveValues = Object.values(endTotals).some(value => Number.isFinite(value) && value > 0);
+
+    const directSnapshot = sanitizeProductSnapshot(endProductsSnapshot || telling.endProducts);
+    if (Object.keys(directSnapshot).length) {
+        return directSnapshot;
+    }
 
     const startTotals = toCheeseTotals(telling.start);
     const startSnapshot = sanitizeProductSnapshot(telling.startProducts);
