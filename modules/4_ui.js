@@ -3850,32 +3850,39 @@ export function renderGoalProgressCards(eventsOverride = null) {
 function renderGoalProgressCard(ev) {
     if (!ev) return '';
 
-    const goal = getEventCheeseGoal(ev);
-    const hasGoal = goal.target > 0;
-    const sold = calculateSoldCheese(ev);
-    const percent = hasGoal && goal.target > 0
-        ? Math.min(100, Math.round((sold / goal.target) * 100))
-        : 0;
-    const remaining = hasGoal ? Math.max(0, goal.target - sold) : 0;
-
+    const goal = buildGoalProgressSnapshot(ev);
     const location = ev?.locatie ? `<div class="goal-progress-location">📍 ${escapeHtml(ev.locatie)}</div>` : '';
-    const percentBadge = hasGoal ? `<span class="goal-progress-percent">${percent}%</span>` : '';
-    const soldLabel = escapeHtml(formatCheeseAmount(sold));
-    const targetLabel = escapeHtml(formatCheeseAmount(goal.target));
-    const remainingLabel = escapeHtml(formatCheeseAmount(remaining));
+    const percentBadge = goal.hasGoal ? `<span class="goal-progress-percent">${goal.percent}%</span>` : '';
 
-    const progressHtml = hasGoal
+    const progressHtml = goal.hasGoal
         ? `
-            <div class="goal-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${escapeHtml(String(goal.target))}" aria-valuenow="${escapeHtml(String(sold))}" aria-label="Voortgang richting doelstelling">
-                <div class="goal-progress-fill" style="width:${percent}%"></div>
+            <div class="goal-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${escapeHtml(String(goal.targetAmount))}" aria-valuenow="${escapeHtml(String(goal.actualAmount))}" aria-label="Voortgang richting omzetdoel">
+                <div class="goal-progress-fill" style="width:${goal.percent}%"></div>
             </div>
             <div class="goal-progress-totals">
-                <span>${soldLabel} verkocht</span>
-                <span>${targetLabel} doel</span>
+                <span>${escapeHtml(goal.actualLabel)} omzet</span>
+                <span>${escapeHtml(goal.targetLabel)} doel</span>
             </div>
-            <div class="goal-progress-remaining">${remaining > 0 ? `${remainingLabel} te gaan` : 'Doel bereikt 🎉'}</div>
+            <div class="goal-progress-remaining">${goal.remainingAmount > 0 ? `${escapeHtml(goal.remainingLabel)} te gaan` : 'Doel bereikt 🎉'}</div>
         `
-        : `<div class="goal-progress-empty-note">Voeg een voorraadplanning toe om een doel te zien.</div>`;
+        : `<div class="goal-progress-empty-note">Stel een omzetdoel in om voortgang te zien.</div>`;
+
+    const dailyHtml = `
+        <div class="goal-progress-daily">
+            <span class="goal-progress-daily__label">Gemiddeld per dag</span>
+            <span class="goal-progress-daily__value">${escapeHtml(goal.dailyEuroLabel)}</span>
+            ${goal.dailyMetaLabel ? `<span class="goal-progress-daily__meta">${escapeHtml(goal.dailyMetaLabel)}</span>` : ''}
+        </div>
+    `;
+
+    const motivationHtml = goal.motivation.length
+        ? `<ul class="goal-progress-motivation">${goal.motivation.map(line => `
+                <li>
+                    <span class="goal-progress-motivation__icon">${escapeHtml(line.icon || '✨')}</span>
+                    <span>${escapeHtml(line.text)}</span>
+                </li>
+            `).join('')}</ul>`
+        : '';
 
     const metaParts = [];
     if (goal.turnoverLabel) metaParts.push(escapeHtml(goal.turnoverLabel));
@@ -3885,7 +3892,7 @@ function renderGoalProgressCard(ev) {
         : '';
 
     return `
-        <article class="goal-progress-card${hasGoal ? '' : ' goal-progress-card--empty'}" data-event-ref="${escapeHtml(String(ev?.id || ev?.naam || ''))}">
+        <article class="goal-progress-card${goal.hasGoal ? '' : ' goal-progress-card--empty'}" data-event-ref="${escapeHtml(String(ev?.id || ev?.naam || ''))}">
             <div class="goal-progress-head">
                 <div class="goal-progress-title-block">
                     <h3 class="goal-progress-title">${escapeHtml(ev?.naam || 'Onbekend evenement')}</h3>
@@ -3894,63 +3901,190 @@ function renderGoalProgressCard(ev) {
                 ${percentBadge}
             </div>
             ${progressHtml}
+            ${dailyHtml}
+            ${motivationHtml}
             ${metaHtml}
         </article>
     `;
 }
 
-function getEventCheeseGoal(ev) {
+function buildGoalProgressSnapshot(ev) {
     const planning = ev?.planning || {};
-    let target = clampCheeseValue(toSafeNumber(planning.totalCheese));
-    if (!target) {
-        const estimate = toCheeseTotals(planning.cheeseEstimate);
-        target = clampCheeseValue(estimate.BG + estimate.ROOK + estimate.GEIT);
+    const expected = planning.expectedTurnover || {};
+    const { currency: eventCurrency, exchangeRate } = determineEventCurrency(ev);
+
+    const targetEUR = pickFirstPositive([
+        expected?.eur,
+        expected?.EUR,
+        expected?.amountEUR,
+        planning?.expectedTurnoverEUR,
+        planning?.expectedRevenueEUR,
+        planning?.expectedRevenue,
+        planning?.turnoverEstimate,
+        planning?.turnoverEstimateEUR,
+        ev?.expectedTurnoverEUR,
+        ev?.expectedRevenueEUR,
+        ev?.expectedRevenue,
+        ev?.verwachteOmzetEUR,
+        ev?.verwachteOmzet
+    ]);
+
+    const targetUSD = pickFirstPositive([
+        expected?.usd,
+        expected?.USD,
+        expected?.amountUSD,
+        planning?.expectedTurnoverUSD,
+        planning?.expectedRevenueUSD,
+        planning?.turnoverEstimateUSD,
+        ev?.expectedTurnoverUSD,
+        ev?.expectedRevenueUSD
+    ]);
+
+    const currencyHint = typeof expected?.currency === 'string' ? expected.currency.trim().toUpperCase() : null;
+    let targetAmount = 0;
+    let targetCurrency = 'EUR';
+
+    if (targetEUR > 0) {
+        targetAmount = targetEUR;
+        targetCurrency = 'EUR';
+    }
+    if (targetUSD > 0 && (!targetAmount || currencyHint === 'USD' || eventCurrency === 'USD')) {
+        targetAmount = targetUSD;
+        targetCurrency = 'USD';
+    } else if (!targetAmount && targetUSD > 0) {
+        targetAmount = targetUSD;
+        targetCurrency = 'USD';
     }
 
-    const expected = planning.expectedTurnover || {};
-    const usd = toSafeNumber(expected.usd);
-    const eur = toSafeNumber(expected.eur);
+    if (!targetAmount && currencyHint === 'USD') {
+        targetCurrency = 'USD';
+    } else if (!targetAmount && currencyHint === 'EUR') {
+        targetCurrency = 'EUR';
+    } else if (!targetAmount && eventCurrency) {
+        targetCurrency = eventCurrency;
+    }
+
+    const totals = calculateOmzetTotals(ev, targetCurrency, exchangeRate);
+    const actualAmount = roundCurrency(totals.revenueTarget);
+    targetAmount = roundCurrency(targetAmount);
+    const hasGoal = targetAmount > 0;
+    const percent = hasGoal && targetAmount > 0
+        ? Math.min(100, Math.round((actualAmount / targetAmount) * 100))
+        : 0;
+    const remainingAmount = hasGoal ? Math.max(0, roundCurrency(targetAmount - actualAmount)) : 0;
+
+    const actualLabel = formatCurrencyValue(actualAmount, targetCurrency);
+    const targetLabel = formatCurrencyValue(targetAmount, targetCurrency);
+    const remainingLabel = formatCurrencyValue(remainingAmount, targetCurrency);
+
+    const entryDates = new Set();
+    collectOmzetEntries(ev).forEach(entry => {
+        const ymd = normalizeOmzetEntryDate(entry);
+        if (ymd) entryDates.add(ymd);
+    });
+    const recordedDays = entryDates.size;
+    const daysForAverage = recordedDays || (totals.hasTurnover ? 1 : 0);
+
+    let euroTotal = totals.revenueEUR;
+    if ((!euroTotal || euroTotal <= 0) && totals.revenueUSD > 0 && Number.isFinite(exchangeRate) && exchangeRate > 0) {
+        euroTotal = roundCurrency(totals.revenueUSD * exchangeRate);
+    }
+
+    const euroPerDayValue = daysForAverage ? roundCurrency(euroTotal / daysForAverage) : 0;
+    const dailyEuroLabel = formatCurrencyValue(euroPerDayValue, 'EUR');
+
+    let dailyMetaLabel = '';
+    if (recordedDays > 1) {
+        dailyMetaLabel = `${recordedDays} dagen geregistreerd`;
+    } else if (recordedDays === 1) {
+        dailyMetaLabel = 'Op basis van 1 dag';
+    } else if (totals.hasTurnover) {
+        dailyMetaLabel = 'Op basis van recente omzet';
+    } else {
+        dailyMetaLabel = 'Nog geen omzet geregistreerd';
+    }
+
     const turnoverParts = [];
-    if (usd > 0) turnoverParts.push(formatCurrency(usd, 'USD'));
-    if (eur > 0) turnoverParts.push(formatCurrency(eur, 'EUR'));
+    if (targetEUR > 0) turnoverParts.push(formatCurrencyValue(targetEUR, 'EUR'));
+    if (targetUSD > 0) turnoverParts.push(formatCurrencyValue(targetUSD, 'USD'));
 
     const mixLabel = planning.mixSnapshot ? `Mix: ${formatPlanMix(planning.mixSnapshot)}` : '';
+    const motivation = buildGoalMotivationLines({
+        hasGoal,
+        percent,
+        remainingLabel: hasGoal ? remainingLabel : '',
+        hasTurnover: totals.hasTurnover
+    });
 
     return {
-        target,
+        hasGoal,
+        percent,
+        targetAmount,
+        actualAmount,
+        remainingAmount,
+        actualLabel,
+        targetLabel,
+        remainingLabel,
         turnoverLabel: turnoverParts.join(' • '),
-        mixLabel
+        mixLabel,
+        dailyEuroLabel,
+        dailyMetaLabel,
+        motivation,
+        hasTurnover: totals.hasTurnover
     };
 }
 
-function calculateSoldCheese(ev) {
-    const telling = ev?.kaasTelling || {};
-    const sales = telling.sales || null;
+function pickFirstPositive(values) {
+    for (const value of values) {
+        const num = toSafeNumber(value);
+        if (Number.isFinite(num) && num > 0) {
+            return num;
+        }
+    }
+    return 0;
+}
 
-    if (sales) {
-        const total = clampCheeseValue(toSafeNumber(sales.total));
-        if (total > 0) return total;
-        const categories = toCheeseTotals(sales.categories);
-        const sum = categories.BG + categories.ROOK + categories.GEIT;
-        if (sum > 0) return clampCheeseValue(sum);
+function buildGoalMotivationLines({ hasGoal, percent, remainingLabel, hasTurnover }) {
+    const lines = [];
+
+    if (hasGoal) {
+        if (percent >= 100) {
+            lines.push({ icon: '🎉', text: 'Doel gehaald! Vier het en upsell souvenirs voor extra marge.' });
+        } else if (percent >= 75) {
+            lines.push({ icon: '🚀', text: 'Bijna binnen – plan een mini-actie om over de streep te gaan.' });
+        } else if (percent >= 50) {
+            lines.push({ icon: '🔥', text: 'Halverwege! Houd je tempo en blijf proeven aanbieden.' });
+        } else if (percent >= 25) {
+            lines.push({ icon: '💡', text: 'Sterke start – spreek actief bezoekers aan voor de volgende sales.' });
+        } else {
+            lines.push({ icon: '🏁', text: 'Zet kleine uurdoelen neer en maak elke klant bijzonder.' });
+        }
+
+        if (percent < 100 && remainingLabel) {
+            lines.push({ icon: '🎯', text: `Nog ${remainingLabel} te gaan – focus op je piekmomenten.` });
+        } else if (percent >= 100) {
+            lines.push({ icon: '🌟', text: 'Gebruik het momentum en bouw aan loyale fans.' });
+        }
+    } else if (hasTurnover) {
+        lines.push({ icon: '🚀', text: 'Mooi werk! Stel nu een doel om gericht te blijven vlammen.' });
+    } else {
+        lines.push({ icon: '🎯', text: 'Stel vandaag een omzetdoel en deel het met het team.' });
     }
 
-    if (telling.start && (telling.end || telling.supplements?.length)) {
-        try {
-            const snapshot = computeEventSalesSnapshot(ev, telling.end || {}, sales?.products);
-            if (snapshot) {
-                const total = clampCheeseValue(toSafeNumber(snapshot.total));
-                if (total > 0) return total;
-                const categories = toCheeseTotals(snapshot.categories);
-                const sum = categories.BG + categories.ROOK + categories.GEIT;
-                if (sum > 0) return clampCheeseValue(sum);
-            }
-        } catch (err) {
-            console.warn('[POS] Kon verkochte kaas niet berekenen voor voortgangskaart', err);
+    const tail = [
+        { icon: '🤝', text: 'Nodig elke bezoeker uit voor een proefplankje.' },
+        { icon: '🧀', text: 'Vertel het verhaal achter je topkazen voor extra beleving.' },
+        { icon: '📈', text: 'Registreer omzet direct zodat iedereen realtime inzicht heeft.' }
+    ];
+
+    for (const item of tail) {
+        if (lines.length >= 3) break;
+        if (!lines.some(existing => existing.text === item.text)) {
+            lines.push(item);
         }
     }
 
-    return 0;
+    return lines.slice(0, 3);
 }
 
 function formatCheeseAmount(value) {
@@ -4215,9 +4349,16 @@ function injectCoreStylesOnce() {
             .goal-progress-fill { background: #2A9626; height: 100%; transition: width .3s ease; }
             .goal-progress-totals { display: flex; justify-content: space-between; font-weight: 800; color: #35513a; font-size: .85rem; }
             .goal-progress-remaining { font-size: .8rem; font-weight: 700; color: #65716c; }
+            .goal-progress-daily { display: flex; align-items: baseline; gap: .5rem; padding: .4rem .6rem .4rem 0; font-weight: 800; color: #143814; }
+            .goal-progress-daily__label { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: #5b6a62; }
+            .goal-progress-daily__value { font-size: 1.2rem; font-weight: 900; color: #1F6D1C; }
+            .goal-progress-daily__meta { margin-left: auto; font-size: .75rem; font-weight: 600; color: #65716c; }
             .goal-progress-meta { font-size: .78rem; color: #65716c; font-weight: 600; display: flex; gap: .5rem; flex-wrap: wrap; }
             .goal-progress-empty-note { font-size: .85rem; font-weight: 700; color: #65716c; }
             .goal-progress-empty { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: inset 0 0 0 1px rgba(0,0,0,.05); font-style: italic; color: #65716c; text-align: center; }
+            .goal-progress-motivation { list-style: none; margin: 0; padding: .75rem; border-radius: .85rem; background: rgba(25,74,31,.05); display: flex; flex-direction: column; gap: .55rem; }
+            .goal-progress-motivation li { display: flex; align-items: flex-start; gap: .6rem; font-weight: 700; color: #35513a; font-size: .82rem; }
+            .goal-progress-motivation__icon { display: inline-flex; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; font-size: 1.1rem; }
 
             /* Upcoming Events Card */
             .upcoming-card { background:#fff; border-radius:.9rem; box-shadow:0 4px 12px rgba(0,0,0,.1); padding:.8rem; max-width:320px; aspect-ratio:1/1; display:flex; flex-direction:column; justify-content:center; align-items:center; align-self:center; text-align:center; }
