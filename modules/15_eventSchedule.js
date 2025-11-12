@@ -1,5 +1,5 @@
 // modules/15_eventSchedule.js
-import { db, saveEvent, getKnownLocations } from './3_data.js';
+import { db, saveEvent, deleteEvent, getKnownLocations } from './3_data.js';
 import { showAlert } from './4_ui.js';
 
 
@@ -205,10 +205,12 @@ export function openPlannedEventsModal() {
 
   // filter op state==='planned'
   const planned = db.evenementen.filter(e => e.state === 'planned');
+  const emptyMessage = document.createElement('p');
+  emptyMessage.className = 'planned-events-empty';
+  emptyMessage.textContent = 'Geen geplande evenementen.';
+
   if (planned.length === 0) {
-    const p = document.createElement('p');
-    p.textContent = 'Geen geplande evenementen.';
-    modal2.appendChild(p);
+    modal2.appendChild(emptyMessage);
   } else {
     const ul = document.createElement('ul');
     ul.style.listStyle = 'none';
@@ -220,20 +222,60 @@ export function openPlannedEventsModal() {
       const span = document.createElement('span');
       span.textContent = `${evt.naam} (${evt.startdatum} – ${evt.einddatum})`;
 
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = 'Bewerken';
-      btn.style.marginLeft = '0.5rem';
-      btn.onclick = () => {
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.textContent = 'Bewerken';
+      editBtn.style.marginLeft = '0.5rem';
+      editBtn.onclick = () => {
         overlay2.remove();
         // heropen de schedule-modal in bewerk-modus
         openEventEditModal(evt.id);
       };
 
-      li.append(span, btn);
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.textContent = 'Verwijderen';
+      deleteBtn.style.marginLeft = '0.5rem';
+      deleteBtn.style.background = '#E74C3C';
+      deleteBtn.style.color = '#fff';
+      deleteBtn.style.border = 'none';
+      deleteBtn.style.borderRadius = '6px';
+      deleteBtn.style.padding = '0.35rem 0.6rem';
+      deleteBtn.style.cursor = 'pointer';
+
+      deleteBtn.onclick = async () => {
+        const confirmMsg = `Weet je zeker dat je “${evt.naam}” wilt verwijderen?`;
+        if (!window.confirm(confirmMsg)) return;
+        const previousLabel = deleteBtn.textContent;
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = 'Verwijderen…';
+        try {
+          const ok = await deleteEvent(evt.id);
+          if (!ok) {
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = previousLabel;
+            return;
+          }
+          li.remove();
+          if (!ul.querySelector('li')) {
+            ul.remove();
+            emptyMessage.style.display = 'block';
+            modal2.appendChild(emptyMessage);
+          }
+          showAlert('✅ Evenement verwijderd', 'success');
+        } catch (err) {
+          console.error(err);
+          deleteBtn.disabled = false;
+          deleteBtn.textContent = previousLabel;
+        }
+      };
+
+      li.append(span, editBtn, deleteBtn);
       ul.appendChild(li);
     });
     modal2.appendChild(ul);
+    emptyMessage.style.display = 'none';
+    modal2.appendChild(emptyMessage);
   }
 
   overlay2.appendChild(modal2);
