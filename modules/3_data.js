@@ -1356,6 +1356,50 @@ export async function saveEvent(eventId, { silent = false, skipReload = false } 
   }
 }
 
+export async function deleteEvent(eventId, { silent = false } = {}) {
+  const idx = Array.isArray(db.evenementen)
+    ? db.evenementen.findIndex(e => String(e.id) === String(eventId))
+    : -1;
+
+  if (idx === -1) {
+    console.warn('⚠️ deleteEvent(): event niet gevonden', eventId);
+    return false;
+  }
+
+  try {
+    if (!silent) showLoading?.();
+    const res = await apiFetch('/delete_evenement.php', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: eventId })
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+
+    const [removed] = db.evenementen.splice(idx, 1);
+
+    if (Array.isArray(store.state.db?.evenementen)) {
+      const storeIdx = store.state.db.evenementen.findIndex(e => String(e.id) === String(eventId));
+      if (storeIdx !== -1) {
+        store.state.db.evenementen.splice(storeIdx, 1);
+      }
+    }
+
+    store.emit?.('events:updated', { eventId, action: 'delete', event: removed });
+    return true;
+  } catch (err) {
+    console.error('❌ Fout bij deleteEvent():', err);
+    if (!silent) {
+      try { showAlert?.('⚠️ Verwijderen van evenement mislukt.', 'error'); } catch {}
+    }
+    return false;
+  } finally {
+    if (!silent) hideLoading?.();
+  }
+}
+
 export async function saveProducten() {
   try {
     showLoading?.();
