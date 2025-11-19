@@ -1,10 +1,11 @@
 // 📦 6_beheerVoorraad.js – Voorraadbeheer/transfer/inkoop (heldere UI, compatible met huidige systeem)
 
-import { db, saveVoorraad } from './3_data.js';
+import { db, saveVoorraad, addVerkoopMutatie } from './3_data.js';
 import { openProductModal } from './7_beheerProducten.js';
 import { toonVerkoopKnoppen } from './8_verkoopscherm.js';
 import { showAlert } from './4_ui.js';
 import { addVoorraadForProduct, getVoorraadForProductInBus, setVoorraadForProduct } from './voorraad_utils.js';
+import { store } from './store.js';
 
 const LOCATION_ORDER = ['RENE', 'PIERRE', 'VOLENDAM'];
 const LOCATION_META = {
@@ -34,6 +35,65 @@ function normalizeLocationKey(rawKey) {
   if (normalized === 'PIERRE') return 'PIERRE';
   if (normalized === 'VOLENDAM') return 'VOLENDAM';
   return normalized;
+}
+
+function resolveActiveEventIdForTransfers() {
+  const session = store.state.session || {};
+  if (session.eventId) return session.eventId;
+  if (session.eventKey) return session.eventKey;
+  const activeDay = store.getActiveEventDay?.();
+  if (activeDay?.eventId) return activeDay.eventId;
+  if (activeDay?.id) return activeDay.id;
+  const events = Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : [];
+  const eventName = session?.meta?.eventName;
+  if (eventName) {
+    const match = events.find(ev => String(ev?.naam || ev?.title || ev?.name || '') === String(eventName));
+    if (match) return match.id || match.naam || match.uuid || match.slug || null;
+  }
+  return null;
+}
+
+async function logTransferMutations(eventId, transfers, sourceBus, destinationBus) {
+  if (!eventId || !Array.isArray(transfers) || !transfers.length) return;
+  const source = sourceBus ? String(sourceBus) : '';
+  const destination = destinationBus ? String(destinationBus) : '';
+  const note = source && destination ? `Transfer ${source} → ${destination}` : 'Transfer tussen bussen';
+  const tasks = [];
+  transfers.forEach((item) => {
+    if (!item || !item.productId || !item.qty) return;
+    const baseMeta = {
+      transfer: {
+        from: source || null,
+        to: destination || null,
+        label: item.naam || item.productId || null
+      }
+    };
+    tasks.push(
+      addVerkoopMutatie(eventId, {
+        productId: item.productId,
+        quantity: item.qty,
+        type: 'transfer',
+        busId: source || null,
+        meta: { ...baseMeta, transfer: { ...baseMeta.transfer, direction: 'out' } },
+        note
+      }, { silent: true })
+    );
+    tasks.push(
+      addVerkoopMutatie(eventId, {
+        productId: item.productId,
+        quantity: item.qty,
+        type: 'transfer',
+        busId: destination || null,
+        meta: { ...baseMeta, transfer: { ...baseMeta.transfer, direction: 'in' } },
+        note
+      }, { silent: true })
+    );
+  });
+  try {
+    await Promise.all(tasks);
+  } catch (err) {
+    console.error('[Voorraad] logTransferMutations failed', err);
+  }
 }
 
 // ===== Helpers =====
@@ -328,7 +388,7 @@ export function toonVoorraadModal() {
 
     const hint = document.createElement('div');
     hint.style.color = '#555';
-    hint.textContent = 'Vul per product het aantal te verplaatsen stuks in.';
+    hint.textContent = 'Vul per product het aantal te verplaatsen stuks in; elke verplaatsing wordt in het actieve event gelogd.';
 
     const fillAllBtn = document.createElement('button');
     fillAllBtn.textContent = '↦ Alles verplaatsen (max)';
@@ -418,7 +478,7 @@ export function toonVoorraadModal() {
         const qty = Math.min(requested, available);
         addVoorraadForProduct(storageKey, -qty, srcSel.value);
         addVoorraadForProduct(storageKey, qty, dstSel.value);
-        transfers.push({ qty, naam: row.dataset.productName || storageKey });
+        transfers.push({ qty, naam: row.dataset.productName || storageKey, productId: storageKey });
       });
 
       if (!transfers.length) {
@@ -427,6 +487,12 @@ export function toonVoorraadModal() {
 
       moved = transfers.reduce((sum, item) => sum + item.qty, 0);
       await Promise.all([saveVoorraad(srcSel.value), saveVoorraad(dstSel.value)]);
+      const eventId = resolveActiveEventIdForTransfers();
+      if (eventId) {
+        await logTransferMutations(eventId, transfers, srcSel.value, dstSel.value);
+      } else {
+        console.warn('[Voorraad] Geen actief evenement gevonden voor transfer logging.');
+      }
       showAlert(`✅ ${moved} stuks verplaatst: ${srcSel.value} → ${dstSel.value}`, 'success');
       close();
     };

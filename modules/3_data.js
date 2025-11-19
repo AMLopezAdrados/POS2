@@ -61,6 +61,10 @@ export const db = {
     crediteuren: [],
     updatedAt: null
   },
+  verkoopMutaties: {
+    version: 1,
+    events: {}
+  },
   verkoopMix: {
     version: 2,
     totals: {
@@ -139,6 +143,26 @@ function toPositiveNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function normalizeSupplierName(raw) {
+  if (raw == null) return '';
+  const value = String(raw).trim();
+  return value;
+}
+
+function normalizeProductCatalog(products) {
+  if (!Array.isArray(products)) return [];
+  return products.map(item => {
+    const supplier = normalizeSupplierName(
+      item.leverancier ?? item.supplier ?? item.Supplier ?? item.vendor
+    );
+    const normalized = { ...item, leverancier: supplier };
+    if (normalized.supplier !== supplier) {
+      normalized.supplier = supplier;
+    }
+    return normalized;
+  });
+}
+
 function normalizeCheeseSource(source) {
   if (!source || typeof source !== 'object') return null;
   const clone = {};
@@ -166,6 +190,166 @@ function normalizeCheeseSource(source) {
     };
   }
   return clone;
+}
+
+const MUTATION_TYPES = ['quick', 'snijkaas', 'transfer', 'correctie'];
+
+function normalizeMutationType(value, fallback = 'quick') {
+  const normalized = String(value || fallback || 'quick').toLowerCase();
+  if (MUTATION_TYPES.includes(normalized)) return normalized;
+  return fallback;
+}
+
+function toSafeInteger(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.trunc(num);
+}
+
+function cloneMutationMeta(meta) {
+  if (!meta || typeof meta !== 'object') return null;
+  try {
+    return JSON.parse(JSON.stringify(meta));
+  } catch (err) {
+    console.warn('[POS] cloneMutationMeta failed', err);
+    return null;
+  }
+}
+
+function normalizeMutationEntry(raw, defaults = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const now = new Date().toISOString();
+  const productId = (raw.productId || raw.product || raw.name || defaults.productId || '').toString().trim();
+  if (!productId) return null;
+
+  const quantity = toSafeInteger(raw.quantity ?? raw.qty ?? raw.amount ?? defaults.quantity ?? 0);
+  if (!quantity) return null;
+
+  const entry = {
+    id: (raw.id || raw.uuid || `${productId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`).toString(),
+    productId,
+    quantity,
+    busId: (raw.busId || raw.bus || defaults.busId || '').toString().trim() || null,
+    type: normalizeMutationType(raw.type || defaults.type),
+    userId: (raw.userId || raw.user || raw.gebruiker || defaults.userId || '').toString().trim() || null,
+    note: (raw.note || raw.opmerking || '').toString().trim() || '',
+    createdAt: raw.createdAt || raw.timestamp || defaults.createdAt || now,
+    updatedAt: raw.updatedAt || defaults.updatedAt || now
+  };
+
+  const meta = cloneMutationMeta(raw.meta) || cloneMutationMeta(defaults.meta);
+  if (meta) entry.meta = meta;
+
+  return entry;
+}
+
+function cloneMutationEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  return {
+    id: entry.id,
+    productId: entry.productId,
+    quantity: entry.quantity,
+    busId: entry.busId || null,
+    type: entry.type,
+    userId: entry.userId || null,
+    note: entry.note || '',
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt,
+    meta: cloneMutationMeta(entry.meta)
+  };
+}
+
+function clonePaperChecklist(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  Object.entries(raw).forEach(([key, value]) => {
+    if (!key) return;
+    const checkedAt = value?.checkedAt || value?.timestamp || value?.checked_at || value?.ts;
+    const userId = value?.userId || value?.user || value?.gebruiker || value?.by || null;
+    out[key] = {
+      checkedAt: checkedAt ? new Date(checkedAt).toISOString() : null,
+      userId: userId ? String(userId) : null
+    };
+  });
+  return out;
+}
+
+function normalizePaperChecklist(raw) {
+  const normalized = {};
+  if (!raw || typeof raw !== 'object') return normalized;
+  Object.entries(raw).forEach(([key, value]) => {
+    if (!key) return;
+    if (value === false || value == null) return;
+    if (typeof value === 'object') {
+      const checkedAt = value.checkedAt || value.timestamp || value.checked_at || value.ts || new Date().toISOString();
+      const userId = value.userId || value.user || value.by || value.gebruiker || null;
+      normalized[key] = {
+        checkedAt: new Date(checkedAt).toISOString(),
+        userId: userId ? String(userId) : null
+      };
+    } else {
+      normalized[key] = {
+        checkedAt: new Date().toISOString(),
+        userId: null
+      };
+    }
+  });
+  return normalized;
+}
+
+function normalizeEventMutations(raw) {
+  const base = { version: 1, entries: [], updatedAt: null, paperChecklist: {} };
+  if (!raw) return base;
+
+  if (Array.isArray(raw.entries)) {
+    const list = raw.entries
+      .map(item => normalizeMutationEntry(item))
+      .filter(Boolean);
+    return {
+      version: Number(raw.version) || 1,
+      entries: list,
+      updatedAt: raw.updatedAt || null,
+      paperChecklist: normalizePaperChecklist(raw.paperChecklist)
+    };
+  }
+
+  if (Array.isArray(raw)) {
+    return {
+      version: 1,
+      entries: raw.map(item => normalizeMutationEntry(item)).filter(Boolean),
+      updatedAt: null,
+      paperChecklist: {}
+    };
+  }
+
+  return base;
+}
+
+function updateDbMutationCache(eventId, normalized) {
+  if (!eventId) return;
+  if (!db.verkoopMutaties) db.verkoopMutaties = { version: 1, events: {} };
+  db.verkoopMutaties.events[eventId] = {
+    version: Number(normalized?.version) || 1,
+    entries: Array.isArray(normalized?.entries)
+      ? normalized.entries.map(entry => cloneMutationEntry(entry))
+      : [],
+    updatedAt: normalized?.updatedAt || null,
+    paperChecklist: clonePaperChecklist(normalized?.paperChecklist)
+  };
+}
+
+function ensureEventMutations(event) {
+  if (!event) return { version: 1, entries: [], updatedAt: null, paperChecklist: {} };
+  if (!event.verkoopMutaties || typeof event.verkoopMutaties !== 'object') {
+    event.verkoopMutaties = { version: 1, entries: [], updatedAt: null, paperChecklist: {} };
+  }
+  if (!Array.isArray(event.verkoopMutaties.entries)) {
+    event.verkoopMutaties = normalizeEventMutations(event.verkoopMutaties);
+  } else if (!event.verkoopMutaties.paperChecklist || typeof event.verkoopMutaties.paperChecklist !== 'object') {
+    event.verkoopMutaties.paperChecklist = {};
+  }
+  updateDbMutationCache(event.id || event.naam || event.uuid || null, event.verkoopMutaties);
+  return event.verkoopMutaties;
 }
 
 function normalizeLedgerParty(entry, fallbackType) {
@@ -1218,7 +1402,7 @@ export async function loadData(retries = 3, delayMs = 5000) {
       fetchOptionalJson('/settings.json' + nocache)
     ]);
 
-    db.producten     = Array.isArray(productenData) ? productenData : [];
+    db.producten     = normalizeProductCatalog(productenData);
     db.voorraad      = normalizeVoorraadShape(voorraadData);
     db.evenementen   = Array.isArray(evenementenData) ? evenementenData : [];
     db.wisselkoersen = Array.isArray(koersenData) ? koersenData : [];
@@ -1230,6 +1414,7 @@ export async function loadData(retries = 3, delayMs = 5000) {
     persistAccountingPendingQueue(db.accounting.pendingQueue);
     db.settings      = normalizeSettingsData(settingsData);
     if (store?.state?.db) {
+      store.state.db.producten = db.producten;
       store.state.db.accounting = db.accounting;
       store.state.db.settings = db.settings;
     }
@@ -1243,6 +1428,8 @@ export async function loadData(retries = 3, delayMs = 5000) {
         evt.personen = [evt.persoon];
         delete evt.persoon;
       }
+      evt.verkoopMutaties = normalizeEventMutations(evt.verkoopMutaties);
+      updateDbMutationCache(evt.id || evt.naam || evt.uuid || null, evt.verkoopMutaties);
     });
 
     // 1c) Optionele migratie van gebruikersdata (best effort)
@@ -1586,6 +1773,7 @@ export async function autoReloadEventData(eventId) {
 
     bijgewerkt.sessions = Array.isArray(bijgewerkt.sessions) ? bijgewerkt.sessions : [];
     bijgewerkt.omzet = normalizeEventOmzetList(Array.isArray(bijgewerkt.omzet) ? bijgewerkt.omzet : []);
+    bijgewerkt.verkoopMutaties = normalizeEventMutations(bijgewerkt.verkoopMutaties);
 
     // In-memory db updaten
     const idx = db.evenementen.findIndex(e => e.id === eventId);
@@ -1595,6 +1783,8 @@ export async function autoReloadEventData(eventId) {
         store.state.db.evenementen[idx] = db.evenementen[idx];
       }
     }
+
+    updateDbMutationCache(eventId, bijgewerkt.verkoopMutaties);
 
     store.emit?.('events:updated', { eventId, reason: 'autoReload' });
 
@@ -1619,6 +1809,141 @@ function findEventReferences(eventId) {
   const storeEvent = storeIndex >= 0 ? storeList[storeIndex] : null;
   const resolvedId = local?.id || storeEvent?.id || eventId;
   return { local, storeEvent, localIndex, storeIndex, resolvedId };
+}
+
+// --------- Verkoopmutaties API ---------
+
+export function getEventVerkoopMutaties(eventId) {
+  const refs = findEventReferences(eventId);
+  const event = refs.local || refs.storeEvent;
+  if (!event) return { version: 1, entries: [], updatedAt: null, paperChecklist: {} };
+  const container = ensureEventMutations(event);
+  return {
+    version: Number(container.version) || 1,
+    entries: container.entries.map(entry => cloneMutationEntry(entry)),
+    updatedAt: container.updatedAt || null,
+    paperChecklist: clonePaperChecklist(container.paperChecklist)
+  };
+}
+
+export function listVerkoopMutaties(eventId, { busId = null } = {}) {
+  const container = getEventVerkoopMutaties(eventId);
+  if (!busId) return container.entries.slice();
+  const normalizedBus = normalizeKey(busId);
+  return container.entries.filter(entry => normalizeKey(entry.busId || '') === normalizedBus);
+}
+
+function normalizeKey(value) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function applyMutationToEvent(event, mutation) {
+  const container = ensureEventMutations(event);
+  const idx = container.entries.findIndex(entry => entry.id === mutation.id);
+  if (idx >= 0) {
+    container.entries[idx] = mutation;
+  } else {
+    container.entries.push(mutation);
+  }
+  container.updatedAt = mutation.updatedAt || new Date().toISOString();
+  return container;
+}
+
+export async function addVerkoopMutatie(eventId, payload = {}, options = {}) {
+  const { skipPersist = false, silent = false } = options;
+  const refs = findEventReferences(eventId);
+  const event = refs.local || refs.storeEvent;
+  if (!event) throw new Error('Event niet gevonden');
+  const session = store.state.session || {};
+  const normalized = normalizeMutationEntry(payload, {
+    busId: payload.busId || session.busId || session.meta?.bus,
+    userId: payload.userId || session.user?.id || session.user?.naam,
+    type: payload.type || 'quick'
+  });
+  if (!normalized) return null;
+
+  const container = applyMutationToEvent(event, normalized);
+  updateDbMutationCache(refs.resolvedId, container);
+
+  if (refs.storeEvent) {
+    ensureEventMutations(refs.storeEvent);
+    const targetContainer = refs.storeEvent.verkoopMutaties;
+    const clone = cloneMutationEntry(normalized);
+    const idx = targetContainer.entries.findIndex(entry => entry.id === clone.id);
+    if (idx >= 0) {
+      targetContainer.entries[idx] = clone;
+    } else {
+      targetContainer.entries.push(clone);
+    }
+    targetContainer.updatedAt = container.updatedAt;
+    if (container.paperChecklist && typeof container.paperChecklist === 'object') {
+      targetContainer.paperChecklist = clonePaperChecklist(container.paperChecklist);
+    }
+  }
+
+  if (!skipPersist) {
+    await saveEvent(refs.resolvedId, { silent, skipReload: false });
+  }
+
+  store.emit?.('events:updated', {
+    eventId: refs.resolvedId,
+    reason: 'verkoopMutatie',
+    entry: cloneMutationEntry(normalized),
+    paperChecklist: clonePaperChecklist(container.paperChecklist)
+  });
+
+  return cloneMutationEntry(normalized);
+}
+
+export async function setPaperChecklistEntry(eventId, productId, checked, options = {}) {
+  if (!eventId || !productId) return null;
+  const { skipPersist = false, silent = false } = options;
+  const refs = findEventReferences(eventId);
+  const event = refs.local || refs.storeEvent;
+  if (!event) throw new Error('Event niet gevonden');
+
+  const container = ensureEventMutations(event);
+  if (!container.paperChecklist || typeof container.paperChecklist !== 'object') {
+    container.paperChecklist = {};
+  }
+
+  const key = String(productId);
+  if (!key) return clonePaperChecklist(container.paperChecklist);
+
+  if (checked) {
+    const session = store.state.session || {};
+    const userId = options.userId || session?.user?.id || session?.user?.naam || session?.user?.email || null;
+    container.paperChecklist[key] = {
+      checkedAt: new Date().toISOString(),
+      userId: userId ? String(userId) : null
+    };
+  } else {
+    delete container.paperChecklist[key];
+  }
+
+  updateDbMutationCache(refs.resolvedId, container);
+
+  if (refs.storeEvent && refs.storeEvent !== event) {
+    ensureEventMutations(refs.storeEvent);
+    refs.storeEvent.verkoopMutaties.paperChecklist = clonePaperChecklist(container.paperChecklist);
+  }
+
+  if (!skipPersist) {
+    await saveEvent(refs.resolvedId, { silent, skipReload: false });
+  }
+
+  const payload = clonePaperChecklist(container.paperChecklist);
+  store.emit?.('events:updated', {
+    eventId: refs.resolvedId,
+    reason: 'paperChecklist',
+    paperChecklist: payload
+  });
+
+  return payload;
 }
 
 function cloneOmzetEntry(entry) {

@@ -39,16 +39,23 @@ export function initEventBeheer(containerSelector = '#eventbeheer') {
   if (!root) return;
   ensureStyles();
   const list = getEvents();
-  root.innerHTML = `
-    <div class="ev-headerbar">
-      <h3>Evenementen</h3>
-      <button class="btn primary" id="evNewBtn">+ Nieuw evenement</button>
-    </div>
-    ${buildTableHTML(list)}
-  `;
-  root.querySelector('#evNewBtn')?.addEventListener('click', openCreateEventModal);
-  bindRowClicks(root.querySelector('tbody'));
-  wireSearch(root, list);
+  root.innerHTML = '';
+  const header = document.createElement('div');
+  header.className = 'ev-headerbar';
+  const title = document.createElement('h3');
+  title.textContent = 'Evenementen';
+  const newBtn = document.createElement('button');
+  newBtn.className = 'btn primary';
+  newBtn.id = 'evNewBtn';
+  newBtn.textContent = '+ Nieuw evenement';
+  newBtn.addEventListener('click', openCreateEventModal);
+  header.append(title, newBtn);
+  root.appendChild(header);
+
+  const explorerHost = document.createElement('div');
+  explorerHost.className = 'ev-explorer';
+  root.appendChild(explorerHost);
+  setupEventExplorer(explorerHost, list);
 }
 
 /** 👉 Compat: modal met evenementenlijst + knop ‘Nieuw’ */
@@ -64,31 +71,18 @@ export function toonEvenementenMenu() {
       <h3>Evenementen</h3>
       <button class="btn primary" id="evNewBtn">+ Nieuw evenement</button>
     </div>
-    <input id="evSearch" class="ev-search" type="search" placeholder="Zoek op naam of locatie…" aria-label="Zoeken" />
-    <div class="ev-table-wrap">
-      ${buildTableHTML(list)}
-    </div>
+    <div class="ev-modal-body"></div>
   `;
   box.querySelector('.modal-close')?.addEventListener('click', close);
   box.querySelector('#evNewBtn')?.addEventListener('click', () => {
     close();
     openCreateEventModal();
   });
-
-  const tbody = box.querySelector('tbody');
-  bindRowClicks(tbody);
-
-  // live filter
-  const input = box.querySelector('#evSearch');
-  input?.addEventListener('input', () => {
-    const q = (input.value || '').trim().toLowerCase();
-    const filtered = list.filter(e => {
-      const hay = `${e.naam || ''} ${e.locatie || ''} ${e.type || ''}`.toLowerCase();
-      return hay.includes(q);
-    });
-    box.querySelector('.ev-table-wrap').innerHTML = buildTableHTML(filtered);
-    bindRowClicks(box.querySelector('tbody'));
-  });
+  const body = box.querySelector('.ev-modal-body');
+  const explorerHost = document.createElement('div');
+  explorerHost.className = 'ev-explorer';
+  body.appendChild(explorerHost);
+  setupEventExplorer(explorerHost, list, { autofocus: true });
 }
 
 /** ✔️ Toegestane kosten mutatie voor gesloten event */
@@ -129,78 +123,181 @@ function getEvents() {
   return Array.isArray(db.evenementen) ? db.evenementen.slice() : [];
 }
 
-function buildTableHTML(list) {
-  if (!list.length) {
-    return `
-      <div class="ev-toolbar">
-        <input class="ev-search" type="search" placeholder="Zoek op naam of locatie…" aria-label="Zoeken" />
-      </div>
-      <table class="ev-tbl"><tbody><tr><td class="muted">Geen evenementen gevonden</td></tr></tbody></table>`;
+const EVENT_SEGMENTS = [
+  { key: 'active', label: 'Actief' },
+  { key: 'planned', label: 'Gepland' },
+  { key: 'closed', label: 'Afgesloten' },
+  { key: 'all', label: 'Alles' }
+];
+
+function setupEventExplorer(host, events, options = {}) {
+  if (!host) return;
+  host.innerHTML = '';
+
+  const state = {
+    filter: options.defaultFilter || 'active',
+    query: ''
+  };
+
+  const controls = document.createElement('div');
+  controls.className = 'ev-controls';
+
+  const segments = document.createElement('div');
+  segments.className = 'ev-segments';
+  EVENT_SEGMENTS.forEach((segment) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `ev-segment${segment.key === state.filter ? ' is-active' : ''}`;
+    btn.dataset.filter = segment.key;
+    btn.textContent = segment.label;
+    segments.appendChild(btn);
+  });
+  controls.appendChild(segments);
+
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'ev-search';
+  search.placeholder = options.placeholder || 'Zoek op naam, locatie of bus…';
+  search.setAttribute('aria-label', 'Zoek evenementen');
+  controls.appendChild(search);
+
+  host.appendChild(controls);
+
+  const grid = document.createElement('div');
+  grid.className = 'ev-card-grid';
+  host.appendChild(grid);
+
+  const updateSegments = () => {
+    segments.querySelectorAll('.ev-segment').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.filter === state.filter);
+    });
+  };
+
+  const getFiltered = () => {
+    const list = Array.isArray(events) ? events : [];
+    return list.filter((event) => matchesSegmentFilter(event, state.filter) && matchesEventQuery(event, state.query));
+  };
+
+  const updateList = () => {
+    renderEventCardList(grid, getFiltered());
+  };
+
+  segments.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.ev-segment');
+    if (!btn) return;
+    state.filter = btn.dataset.filter || 'all';
+    updateSegments();
+    updateList();
+  });
+
+  search.addEventListener('input', () => {
+    state.query = (search.value || '').trim().toLowerCase();
+    updateList();
+  });
+
+  updateSegments();
+  updateList();
+
+  if (options.autofocus) {
+    setTimeout(() => search.focus(), 120);
   }
-    const rows = list.map(e => {
-        const periode = formatRange(e);
-        const closed = isClosed(e);
-        const badge = closed
-            ? '<span class="badge closed">AFGESLOTEN</span>'
-            : (String(e.state || '').toLowerCase() === 'active'
-                ? '<span class="badge open">ACTIVE</span>'
-                : '<span class="badge planned">PLANNED</span>');
-        const startChip = renderStartChip(e);
-        const supplementChip = renderSupplementChip(e);
-        const omzetChip = renderOmzetChip(e);
-        return `
-          <tr class="ev-row ${closed ? 'is-closed' : ''}" data-id="${escapeHtml(e.id)}" data-name="${escapeHtml(e.naam)}">
-            <td class="ev-name">${escapeHtml(e.naam)}</td>
-            <td>${escapeHtml(e.locatie || '')}</td>
-            <td>${escapeHtml(e.type || '')}</td>
-            <td>${escapeHtml(periode)}</td>
-            <td class="ev-chip">${startChip}</td>
-            <td class="ev-chip">${supplementChip}</td>
-            <td class="ev-chip">${omzetChip}</td>
-            <td>${badge}</td>
-            <td>
-              ${'<button class="btn tiny ghost ev-details">Details →</button>'}
-              ${closed ? '<button class="btn tiny ghost ev-addcost">+ kosten</button>' : ''}
-            </td>
-      </tr>
-    `;
-  }).join('');
-  return `
-    <div class="ev-toolbar">
-      <input class="ev-search" type="search" placeholder="Zoek op naam of locatie…" aria-label="Zoeken" />
-    </div>
-    <table class="ev-tbl">
-      <thead>
-        <tr><th>Naam</th><th>Locatie</th><th>Type</th><th>Periode</th><th>Starttelling</th><th>Aanvullingen</th><th>Dagomzet</th><th>Status</th><th></th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
 }
 
-function bindRowClicks(tbody) {
-  if (!tbody) return;
-  tbody.querySelectorAll('.ev-row').forEach(row => {
-    const eventRef = row.dataset.id || row.dataset.name;
-    const closed = row.classList.contains('is-closed');
+function matchesSegmentFilter(event, filter = 'active') {
+  if (filter === 'all') return true;
+  const status = resolveEventStatus(event);
+  return status.key === filter;
+}
 
-    row.addEventListener('click', async (e) => {
-      if (e.target && (e.target.closest('.ev-details') || e.target.closest('.ev-addcost'))) return;
-      await openDetailsSafe(eventRef);
-    });
+function matchesEventQuery(event, query) {
+  if (!query) return true;
+  const haystack = `${event?.naam || ''} ${event?.locatie || ''} ${event?.type || ''} ${event?.bus || ''} ${event?.busId || ''}`
+    .toLowerCase();
+  return haystack.includes(query);
+}
 
-    row.querySelector('.ev-details')?.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await openDetailsSafe(eventRef);
-    });
-
-    if (closed) {
-      row.querySelector('.ev-addcost')?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openAddCostMiniModal(eventRef);
-      });
-    }
+function renderEventCardList(container, list) {
+  if (!container) return;
+  container.innerHTML = '';
+  if (!Array.isArray(list) || !list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'ev-empty';
+    empty.textContent = 'Geen evenementen gevonden';
+    container.appendChild(empty);
+    return;
+  }
+  const sorted = list.slice().sort((a, b) => {
+    const aStart = getEventStartYMD(a) || '';
+    const bStart = getEventStartYMD(b) || '';
+    return aStart.localeCompare(bStart);
   });
+  sorted.forEach((event) => {
+    container.appendChild(buildEventCard(event));
+  });
+}
+
+function buildEventCard(event) {
+  const card = document.createElement('article');
+  const status = resolveEventStatus(event);
+  const periode = formatRange(event) || 'Nog niet gepland';
+  const busLabel = event?.bus || event?.busId || event?.ownerBus || 'n.v.t.';
+  const eventRef = event?.id || event?.naam;
+  card.className = `ev-card ev-card--${status.key}`;
+  card.dataset.id = event?.id || '';
+  card.dataset.name = event?.naam || '';
+  card.innerHTML = `
+    <header>
+      <div>
+        <p class="ev-card__eyebrow">${status.label}</p>
+        <h4>${escapeHtml(event?.naam || 'Onbekend evenement')}</h4>
+        <p class="ev-card__meta">${escapeHtml(event?.locatie || event?.type || '')}</p>
+      </div>
+      <span class="ev-card__badge ev-card__badge--${status.key}">${status.badge}</span>
+    </header>
+    <div class="ev-card__body">
+      <div class="ev-card__row"><span>Periode</span><strong>${escapeHtml(periode)}</strong></div>
+      <div class="ev-card__row"><span>Bus</span><strong>${escapeHtml(String(busLabel))}</strong></div>
+    </div>
+    <div class="ev-card__chips">
+      <div><span>Starttelling</span>${renderStartChip(event)}</div>
+      <div><span>Aanvullingen</span>${renderSupplementChip(event)}</div>
+      <div><span>Dagomzet</span>${renderOmzetChip(event)}</div>
+    </div>
+    <footer>
+      <button type="button" class="btn tiny ghost" data-action="details">Details →</button>
+      ${isClosed(event) ? '<button type="button" class="btn tiny ghost" data-action="addcost">+ kosten</button>' : ''}
+    </footer>
+  `;
+
+  card.addEventListener('click', async () => {
+    if (!eventRef) return;
+    await openDetailsSafe(eventRef);
+  });
+  const detailsBtn = card.querySelector('[data-action="details"]');
+  detailsBtn?.addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!eventRef) return;
+    await openDetailsSafe(eventRef);
+  });
+  if (isClosed(event)) {
+    const costBtn = card.querySelector('[data-action="addcost"]');
+    costBtn?.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (eventRef) openAddCostMiniModal(eventRef);
+    });
+  }
+  return card;
+}
+
+function resolveEventStatus(event) {
+  if (isClosed(event)) {
+    return { key: 'closed', label: 'Afgesloten', badge: 'AFGESLOTEN' };
+  }
+  const state = String(event?.state || '').toLowerCase();
+  if (state === 'active') {
+    return { key: 'active', label: 'Actief', badge: 'ACTIEF' };
+  }
+  return { key: 'planned', label: 'Gepland', badge: 'GEPLAND' };
 }
 
 async function openDetailsSafe(eventRef) {
@@ -210,20 +307,6 @@ async function openDetailsSafe(eventRef) {
     console.error('[Eventbeheer] openEventDetail error:', err);
     showAlert('Kon eventdetails niet openen. Controleer de details-module.', 'error');
   }
-}
-
-function wireSearch(root, list) {
-  const search = root.querySelector('.ev-search');
-  const wrap = root.querySelector('.ev-table-wrap') || root;
-  search?.addEventListener('input', () => {
-    const q = (search.value || '').trim().toLowerCase();
-    const filtered = list.filter(e => {
-      const hay = `${e.naam || ''} ${e.locatie || ''} ${e.type || ''}`.toLowerCase();
-      return hay.includes(q);
-    });
-    wrap.innerHTML = buildTableHTML(filtered);
-    bindRowClicks(wrap.querySelector('tbody'));
-  });
 }
 
 function formatRange(e) {
@@ -371,23 +454,35 @@ function ensureStyles() {
   if (stylesInjected) return;
   const css = `
   .ev-modal .modal-box{width:min(92vw,900px)}
+  .ev-modal-body{max-height:65vh; overflow-y:auto; padding:0 .25rem .5rem}
   .ev-headerbar{display:flex; align-items:center; justify-content:space-between; gap:.6rem; margin:.2rem 0 .4rem}
-  .ev-search{width:100%; margin:.4rem 0 .6rem; padding:.45rem .6rem; border:1px solid #ddd; border-radius:8px;}
-  .ev-table-wrap{max-height:65vh; overflow:auto}
-  .ev-tbl{width:100%; border-collapse:collapse; background:#fff; border-radius:10px; overflow:hidden}
-  .ev-tbl th,.ev-tbl td{border-bottom:1px solid #eee; padding:.45rem .5rem; text-align:left}
-  .ev-row{cursor:pointer}
-  .ev-row:hover{background:#fafafa}
-  .ev-row.is-closed{opacity:.7; cursor:default}
-  .ev-name{font-weight:800}
-  .ev-chip{text-align:center}
+  .ev-explorer{display:flex; flex-direction:column; gap:.75rem}
+  .ev-controls{display:flex; flex-direction:column; gap:.6rem}
+  .ev-segments{display:flex; flex-wrap:wrap; gap:.35rem}
+  .ev-segment{border:none; border-radius:999px; padding:.35rem .85rem; font-weight:800; font-size:.82rem; background:#f3f4f6; color:#4b5563; cursor:pointer}
+  .ev-segment.is-active{background:#2A9626; color:#fff; box-shadow:0 5px 12px rgba(42,150,38,.25)}
+  .ev-search{width:100%; padding:.5rem .7rem; border:1px solid #d1d5db; border-radius:10px; font-size:.9rem}
+  .ev-card-grid{display:flex; flex-direction:column; gap:.9rem}
+  .ev-card{background:#fff; border-radius:1rem; padding:1rem; box-shadow:0 10px 20px rgba(15,23,42,.08); display:flex; flex-direction:column; gap:.75rem}
+  .ev-card header{display:flex; justify-content:space-between; gap:.8rem}
+  .ev-card__eyebrow{text-transform:uppercase; font-size:.72rem; color:#6b7280; margin:0 0 .15rem}
+  .ev-card__meta{margin:.15rem 0 0; color:#4b5563; font-size:.9rem}
+  .ev-card__badge{align-self:flex-start; padding:.25rem .65rem; border-radius:999px; font-weight:800; font-size:.72rem; letter-spacing:.05em}
+  .ev-card__badge--active{background:rgba(42,150,38,.12); color:#1f5a21}
+  .ev-card__badge--planned{background:rgba(255,197,0,.18); color:#7c5f00}
+  .ev-card__badge--closed{background:rgba(231,76,60,.15); color:#b02a1c}
+  .ev-card__body{display:flex; flex-direction:column; gap:.35rem}
+  .ev-card__row{display:flex; justify-content:space-between; font-size:.9rem; font-weight:600; color:#1f2937}
+  .ev-card__row span{color:#6b7280; font-weight:600}
+  .ev-card__chips{display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:.45rem; font-size:.8rem}
+  .ev-card__chips div{background:#f9fafb; border-radius:.75rem; padding:.4rem .6rem; display:flex; flex-direction:column; gap:.15rem}
+  .ev-card__chips span{color:#6b7280; font-size:.72rem; font-weight:700}
+  .ev-card footer{display:flex; flex-wrap:wrap; gap:.5rem}
+  .ev-card button{cursor:pointer}
+  .ev-empty{padding:1rem; background:#f9fafb; border-radius:12px; text-align:center; font-weight:700; color:#6b7280}
   .btn{padding:.4rem .7rem; border:1px solid #ddd; border-radius:8px; background:#fff; cursor:pointer}
   .btn.primary{background:#2A9626; color:#fff; border-color:#2A9626}
   .btn.tiny{padding:.15rem .45rem; font-size:.85rem; border-radius:999px}
-  .badge{display:inline-flex; align-items:center; padding:.05rem .45rem; border-radius:999px; font-size:.75rem; color:#fff}
-  .badge.open{background:#2A9626}
-  .badge.closed{background:#777}
-  .badge.planned{background:#1976D2}
   .chip{display:inline-flex; align-items:center; justify-content:center; padding:.1rem .5rem; border-radius:999px; font-size:.72rem; font-weight:700; min-width:48px}
   .chip.ok{background:#e6f6e6; color:#1F6D1C}
   .chip.warn{background:#fdecea; color:#C62828}

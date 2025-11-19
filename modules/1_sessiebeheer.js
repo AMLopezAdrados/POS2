@@ -4,10 +4,104 @@ import { showMainShell } from './4_ui.js';
 import { renderSalesUI } from './8_verkoopscherm.js';
 import { activateTodayPlannedEventsLocal } from './5_eventbeheer.js';
 import { getUser } from '../0_login.js';
+import { resolveBusId, setActiveBus } from './voorraad_utils.js';
 
 const YMD_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
 let accountingRetryListenerBound = false;
+
+function normalizeUserRecord(rawUser) {
+  if (!rawUser || typeof rawUser !== 'object') return null;
+  const id = rawUser.id || rawUser.uuid || rawUser.code || rawUser.email || rawUser.username || rawUser.naam || rawUser.name;
+  const name = rawUser.naam || rawUser.name || rawUser.displayName || rawUser.username || (id ? String(id).split('@')[0] : '');
+  const role = rawUser.rol || rawUser.role || rawUser.type || null;
+  return {
+    ...rawUser,
+    id: id ? String(id) : null,
+    naam: name ? String(name) : null,
+    name: name ? String(name) : null,
+    role: role ? String(role) : null
+  };
+}
+
+function normalizeValueForMatch(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase();
+}
+
+function matchUserInCollection(collection, user) {
+  if (!collection || !user) return false;
+  const userTokens = new Set([
+    normalizeValueForMatch(user.id),
+    normalizeValueForMatch(user.naam),
+    normalizeValueForMatch(user.name),
+    normalizeValueForMatch(user.email)
+  ].filter(Boolean));
+  if (!userTokens.size) return false;
+
+  if (Array.isArray(collection)) {
+    return collection.some(item => matchUserInCollection(item, user));
+  }
+
+  if (typeof collection === 'string') {
+    const norm = normalizeValueForMatch(collection);
+    return userTokens.has(norm);
+  }
+
+  if (collection && typeof collection === 'object') {
+    const tokens = [
+      collection.id,
+      collection.uuid,
+      collection.code,
+      collection.email,
+      collection.naam,
+      collection.name,
+      collection.persoon,
+      collection.user,
+      collection.gebruiker
+    ];
+    return tokens.some(token => userTokens.has(normalizeValueForMatch(token)));
+  }
+
+  return false;
+}
+
+function listEventsForUser(events, user) {
+  if (!Array.isArray(events) || !user) return [];
+  return events.filter(event => {
+    if (matchUserInCollection(event?.personen, user)) return true;
+    if (matchUserInCollection(event?.personeel, user)) return true;
+    if (matchUserInCollection(event?.users, user)) return true;
+    if (Array.isArray(event?.sessions)) {
+      return event.sessions.some(session => matchUserInCollection(session?.personen || session?.users || session?.persoon, user));
+    }
+    return false;
+  });
+}
+
+function preferEventForUser(events, referenceDate = new Date()) {
+  if (!Array.isArray(events) || !events.length) return null;
+  const today = normalizeYMD(referenceDate);
+  if (today) {
+    const todaysEvent = events.find(event => {
+      const range = getEventDateRange(event);
+      return isInRangeYMD(today, range.start, range.end);
+    });
+    if (todaysEvent) return todaysEvent;
+  }
+  const sorted = events.slice().sort((a, b) => {
+    const aStart = getEventDateRange(a).start || '';
+    const bStart = getEventDateRange(b).start || '';
+    return new Date(aStart || 0) - new Date(bStart || 0);
+  });
+  return sorted[0] || null;
+}
+
+function resolveBusFromEvent(event) {
+  if (!event) return null;
+  return event.bus || event.busId || event.ownerBus || event.meta?.bus || null;
+}
 
 function toLocalYMD(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
@@ -163,6 +257,14 @@ function determineInitialActiveEventDay(db, referenceDate = new Date()) {
   const events = Array.isArray(db?.evenementen) ? db.evenementen : [];
   if (!events.length) return null;
 
+  const sessionEventId = store.state.session?.eventId;
+  if (sessionEventId) {
+    const target = events.find(ev => String(ev?.id ?? ev?.naam ?? '') === String(sessionEventId));
+    if (target) {
+      return buildActiveEventDaySnapshot(target, { targetDate: referenceDate });
+    }
+  }
+
   const today = normalizeYMD(referenceDate);
   const sorted = events.slice().sort((a, b) => {
     const aStart = getEventDateRange(a).start || '';
@@ -212,9 +314,42 @@ export async function bootApp() {
       return;
     }
 
+    const rawUser = getUser();
+    const normalizedUser = normalizeUserRecord(rawUser);
+
     const db = await loadData();
     store.setDb(db);
     store.emit('db:loaded', db);
+
+    const events = Array.isArray(db?.evenementen) ? db.evenementen : [];
+    const userEvents = normalizedUser ? listEventsForUser(events, normalizedUser) : [];
+    const preferredEvent = preferEventForUser(userEvents.length ? userEvents : events, new Date());
+    const eventId = preferredEvent?.id || preferredEvent?.naam || null;
+    const eventBus = resolveBusFromEvent(preferredEvent);
+
+    const sessionState = store.setSession({
+      user: normalizedUser,
+      eventId,
+      busId: eventBus || null,
+      meta: {
+        bus: eventBus || null,
+        eventName: preferredEvent?.naam || preferredEvent?.title || null,
+        locatie: preferredEvent?.locatie || preferredEvent?.plaats || null,
+        range: preferredEvent ? getEventDateRange(preferredEvent) : null,
+        userName: normalizedUser?.naam || normalizedUser?.name || null
+      },
+      lastSync: new Date().toISOString()
+    });
+
+    if (sessionState.busId) {
+      setActiveBus(sessionState.busId);
+    } else {
+      const fallbackBus = resolveBusId();
+      if (fallbackBus) {
+        store.updateSession({ busId: fallbackBus, meta: { bus: fallbackBus } });
+      }
+    }
+
     ensureAccountingOnlineRetry();
     try {
       await processAccountingPendingQueue({ silent: true, reason: 'boot' });
