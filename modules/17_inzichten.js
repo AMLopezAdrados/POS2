@@ -8,7 +8,8 @@ import {
   closeAllModals,
   computeEventFinancials,
   collectOmzetEntries,
-  formatCurrencyValue
+  formatCurrencyValue,
+  formatCurrencyPair
 } from './4_ui.js';
 
 function isClosed(ev) {
@@ -396,6 +397,273 @@ export function openInzichtenModal() {
   }
 }
 
+
+function buildInlineInsightsMarkup(events, state) {
+  const label = buildRangeLabel(state.days);
+  const eventLabel = resolveEventLabel(state.eventId, events);
+  return `
+    <header class="insights-inline__header">
+      <div>
+        <h2>📈 Inzichten</h2>
+        <p class="muted">Mobiele samenvatting van omzet, mix en boekhouding.</p>
+      </div>
+      <button type="button" class="btn-secondary" data-role="open-modal">Volledige analyse</button>
+    </header>
+    <div class="insights-inline__filters">
+      <div class="chip-group" data-role="range-group" aria-label="Periode">
+        <button type="button" class="chip" data-range="7">7 dagen</button>
+        <button type="button" class="chip" data-range="30">30 dagen</button>
+        <button type="button" class="chip" data-range="90">90 dagen</button>
+        <button type="button" class="chip" data-range="__ALL__">Alles</button>
+      </div>
+      <label class="insights-inline__select">
+        <span>Event</span>
+        <select data-role="event" aria-label="Kies event">
+          <option value="__ALL__">Alle evenementen</option>
+          ${events.map(ev => `<option value="${esc(ev.id)}">${esc(ev.naam || ev.slug || ev.id)}</option>`).join('')}
+        </select>
+      </label>
+      <p class="insights-inline__filters-note">${esc(eventLabel)} · ${esc(label)}</p>
+    </div>
+    <div class="insights-inline__loading" data-role="loading">Gegevens laden…</div>
+    <section class="insights-inline__hero" data-role="hero" hidden></section>
+    <div class="insights-inline__grid" data-role="grid" hidden>
+      <section class="insights-inline__card" data-role="products">
+        <header>
+          <h3>Topproducten</h3>
+          <span class="insights-inline__card-meta" data-role="product-meta"></span>
+        </header>
+        <ol class="insights-inline__list" data-role="product-list"></ol>
+      </section>
+      <section class="insights-inline__card" data-role="ledger">
+        <header>
+          <h3>Boekhouding</h3>
+          <span class="insights-inline__card-meta" data-role="ledger-meta"></span>
+        </header>
+        <ul class="insights-inline__list" data-role="ledger-list"></ul>
+      </section>
+      <section class="insights-inline__card" data-role="timeline">
+        <header>
+          <h3>Omzettijdlijn</h3>
+          <span class="insights-inline__card-meta" data-role="timeline-meta"></span>
+        </header>
+        <ul class="insights-inline__list" data-role="timeline-list"></ul>
+      </section>
+      <section class="insights-inline__card" data-role="coverage">
+        <header>
+          <h3>Registratiecheck</h3>
+          <span class="insights-inline__card-meta" data-role="coverage-meta"></span>
+        </header>
+        <ul class="insights-inline__list" data-role="coverage-list"></ul>
+      </section>
+    </div>
+  `;
+}
+
+function populateEventSelect(selectEl, events, activeId) {
+  if (!selectEl) return;
+  selectEl.innerHTML = '<option value="__ALL__">Alle evenementen</option>' + events.map(ev => `<option value="${esc(ev.id)}">${esc(ev.naam || ev.slug || ev.id)}</option>`).join('');
+  const value = activeId && events.some(ev => String(ev.id) === String(activeId)) ? activeId : '__ALL__';
+  selectEl.value = value;
+  if (selectEl.value !== value) {
+    selectEl.value = '__ALL__';
+  }
+}
+
+function setActiveRange(buttons, active) {
+  buttons.forEach((btn) => {
+    const isActive = btn.dataset.range === active;
+    btn.classList.toggle('chip--active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+}
+
+function showLoadingState(loadingEl, heroEl, gridEl, isLoading, isError = false) {
+  if (loadingEl) {
+    loadingEl.hidden = !isLoading && !isError;
+    loadingEl.classList.toggle('insights-inline__loading--error', Boolean(isError));
+  }
+  if (heroEl) heroEl.hidden = isLoading || isError;
+  if (gridEl) gridEl.hidden = isLoading || isError;
+}
+
+function renderInlineHero(heroEl, insights, events, state) {
+  if (!heroEl) return;
+  const totals = insights?.totals || {};
+  const revenueEUR = totals.revenue?.EUR || 0;
+  const revenueUSD = totals.revenue?.USD || 0;
+  const cheeseEUR = totals.cheeseRevenue?.EUR || 0;
+  const netResultEUR = totals.netResultEUR || 0;
+  const cheeseShare = revenueEUR > 0 ? Math.round((cheeseEUR / revenueEUR) * 100) : 0;
+  const souvenirShare = revenueEUR > 0 ? Math.max(0, 100 - cheeseShare) : 0;
+  const eventLabel = resolveEventLabel(state.eventId, events);
+  const rangeLabel = buildRangeLabel(state.days);
+  const omzetRegistraties = totals.dagOmzetCount || 0;
+
+  heroEl.innerHTML = `
+    <div class="insights-inline__hero-primary">
+      <span class="insights-inline__eyebrow">${esc(eventLabel)} · ${esc(rangeLabel)}</span>
+      <strong class="insights-inline__hero-value">${esc(formatCurrencyPair(revenueEUR, revenueUSD))}</strong>
+      <p>Totale omzet</p>
+    </div>
+    <div class="insights-inline__hero-stats">
+      <div class="insights-inline__stat">
+        <span>Netto resultaat</span>
+        <strong class="${netResultEUR < 0 ? 'negative' : 'positive'}">${esc(formatCurrencyValue(netResultEUR, 'EUR'))}</strong>
+      </div>
+      <div class="insights-inline__stat">
+        <span>Kaas vs. overig</span>
+        <strong>${cheeseShare}% kaas · ${souvenirShare}% overig</strong>
+      </div>
+      <div class="insights-inline__stat">
+        <span>Registraties</span>
+        <strong>${omzetRegistraties}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function renderInlineProducts(listEl, metaEl, insights) {
+  if (!listEl || !metaEl) return;
+  const products = Array.isArray(insights?.productSummaries) ? insights.productSummaries : [];
+  const top = products.filter(item => (item?.units || 0) > 0).slice(0, 4);
+
+  metaEl.textContent = products.length ? `${products.length} producten` : 'Nog geen producten';
+
+  if (!top.length) {
+    listEl.innerHTML = '<li class="insights-inline__empty">Nog geen verkopen geregistreerd.</li>';
+    return;
+  }
+
+  listEl.innerHTML = top.map((item, index) => `
+    <li>
+      <span class="insights-inline__badge">${index + 1}</span>
+      <div class="insights-inline__list-body">
+        <strong>${esc(item.name)}</strong>
+        <span>${formatUnits(item.units)} stuks · ${esc(formatCurrencyPair(item.revenueEUR, item.revenueUSD))}</span>
+      </div>
+    </li>
+  `).join('');
+}
+
+function renderInlineLedger(listEl, metaEl, insights) {
+  if (!listEl || !metaEl) return;
+  const accounting = insights?.accounting || {};
+  const totals = accounting.totals || { incomeEUR: 0, expenseEUR: 0, balanceEUR: 0 };
+  const perCategory = Array.isArray(accounting.perCategory) ? accounting.perCategory : [];
+  const topCategory = perCategory[0];
+
+  metaEl.textContent = `Saldo ${formatCurrencyValue(totals.balanceEUR || 0, 'EUR')}`;
+
+  const rows = [
+    { label: 'Inkomsten', value: formatCurrencyValue(totals.incomeEUR || 0, 'EUR'), icon: '⬆️' },
+    { label: 'Uitgaven', value: formatCurrencyValue(Math.abs(totals.expenseEUR || 0), 'EUR'), icon: '⬇️' },
+    { label: 'Belangrijkste categorie', value: topCategory ? `${esc(topCategory.label)} · ${formatCurrencyValue(topCategory.balance, 'EUR')}` : 'Geen categorieën', icon: '🏷️' }
+  ];
+
+  listEl.innerHTML = rows.map(row => `
+    <li>
+      <span class="insights-inline__badge">${row.icon}</span>
+      <div class="insights-inline__list-body">
+        <strong>${row.label}</strong>
+        <span>${esc(row.value)}</span>
+      </div>
+    </li>
+  `).join('');
+}
+
+function renderInlineTimeline(listEl, metaEl, insights, state) {
+  if (!listEl || !metaEl) return;
+  const timeline = Array.isArray(insights?.timeline) ? insights.timeline.slice(-5).reverse() : [];
+  if (!timeline.length) {
+    metaEl.textContent = 'Geen registraties';
+    listEl.innerHTML = '<li class="insights-inline__empty">Nog geen omzetregistraties voor deze periode.</li>';
+    return;
+  }
+
+  const label = state.days === '__ALL__' ? 'Volledige historie' : `Laatste ${state.days} dagen`;
+  metaEl.textContent = label;
+
+  listEl.innerHTML = timeline.map((item) => `
+    <li>
+      <span class="insights-inline__badge">${esc(item.date)}</span>
+      <div class="insights-inline__list-body">
+        <strong>${esc(formatCurrencyPair(item.eur, item.usd))}</strong>
+        <span>Omzetregistratie</span>
+      </div>
+    </li>
+  `).join('');
+}
+
+function renderInlineCoverage(listEl, metaEl, insights, events) {
+  if (!listEl || !metaEl) return;
+  const coverage = Array.isArray(insights?.coverage) ? insights.coverage : [];
+  const missing = coverage.filter(item => (item?.missing || 0) > 0);
+
+  if (!coverage.length) {
+    metaEl.textContent = 'Geen gegevens';
+    listEl.innerHTML = '<li class="insights-inline__empty">Nog geen events geselecteerd.</li>';
+    return;
+  }
+
+  if (!missing.length) {
+    metaEl.textContent = 'Alles bijgewerkt';
+    listEl.innerHTML = '<li class="insights-inline__empty">Alle dagomzet registraties zijn ingevoerd.</li>';
+    return;
+  }
+
+  const totalMissing = missing.reduce((sum, item) => sum + (item.missing || 0), 0);
+  metaEl.textContent = `${totalMissing} open registratie${totalMissing === 1 ? '' : 's'}`;
+
+  listEl.innerHTML = missing.slice(0, 4).map(item => {
+    const name = resolveEventLabel(item.id, events, item.name);
+    const expected = item.expected || 0;
+    const recorded = item.recorded || 0;
+    return `
+      <li>
+        <span class="insights-inline__badge">⚠️</span>
+        <div class="insights-inline__list-body">
+          <strong>${esc(name)}</strong>
+          <span>${recorded}/${expected} dagen geregistreerd · ${item.missing} open</span>
+        </div>
+      </li>
+    `;
+  }).join('');
+}
+
+const unitsFormatter = new Intl.NumberFormat('nl-NL', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1
+});
+
+function formatUnits(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  return unitsFormatter.format(num);
+}
+
+function resolveEventLabel(eventId, events, fallback = 'Onbekend event') {
+  if (!eventId || eventId === '__ALL__') return 'Alle evenementen';
+  const match = events.find(ev => String(ev.id) === String(eventId));
+  return match ? (match.naam || match.slug || match.id || fallback) : fallback;
+}
+
+function buildRangeLabel(range) {
+  switch (range) {
+    case '7':
+      return 'Laatste 7 dagen';
+    case '30':
+      return 'Laatste 30 dagen';
+    case '90':
+      return 'Laatste 90 dagen';
+    case '365':
+      return 'Laatste 365 dagen';
+    case '__ALL__':
+    default:
+      return 'Volledige historie';
+  }
+}
+
 function resolveContainer(container) {
   if (container instanceof HTMLElement) return container;
   if (typeof container === 'string') return document.querySelector(container);
@@ -404,7 +672,51 @@ function resolveContainer(container) {
 
 function injectInlineStyles() {
   if (document.getElementById('insights-inline-styles')) return;
-  const css = `
+  const style = document.createElement('style');
+  style.id = 'insights-inline-styles';
+  style.textContent = `
+    .insights-inline{display:flex;flex-direction:column;gap:1rem;padding-bottom:1rem;}
+    .insights-inline__header{display:flex;justify-content:space-between;align-items:flex-start;gap:.85rem;flex-wrap:wrap;}
+    .insights-inline__header h2{margin:0;font-size:1.25rem;font-weight:900;color:#143814;}
+    .insights-inline__header p{margin:.15rem 0 0;font-weight:700;color:#35513a;font-size:.9rem;}
+    .insights-inline__filters{background:#fff;border-radius:1.1rem;box-shadow:0 16px 32px rgba(0,0,0,.08);border:1px solid rgba(0,0,0,.04);padding:1rem;display:flex;flex-direction:column;gap:.75rem;}
+    .insights-inline__filters-note{margin:0;font-weight:700;color:#35513a;font-size:.85rem;}
+    .chip-group{display:flex;gap:.5rem;flex-wrap:wrap;}
+    .chip{border:none;border-radius:999px;background:#f4f6f5;color:#143814;font-weight:800;padding:.45rem .95rem;cursor:pointer;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);transition:transform .15s ease,box-shadow .15s ease;}
+    .chip--active{background:#2A9626;color:#fff;box-shadow:0 10px 20px rgba(42,150,38,.25);}
+    .chip:focus-visible{outline:3px solid rgba(42,150,38,.32);outline-offset:2px;}
+    .chip:active{transform:scale(.97);}
+    .insights-inline__select{display:flex;flex-direction:column;gap:.3rem;font-weight:800;color:#35513a;}
+    .insights-inline__select select{border-radius:.8rem;border:1px solid #d1d5db;padding:.55rem .75rem;font-weight:800;color:#143814;background:#fff;}
+    .insights-inline__select select:focus{outline:none;border-color:#2A9626;box-shadow:0 0 0 3px rgba(42,150,38,.18);}
+    .insights-inline__loading{padding:1rem;border-radius:1rem;background:rgba(25,74,31,.06);font-weight:800;color:#194a1f;text-align:center;}
+    .insights-inline__loading--error{background:rgba(198,40,40,.12);color:#c62828;}
+    .insights-inline__hero{background:linear-gradient(135deg,#fff9d6,#f1fbef);border-radius:1.2rem;padding:1.2rem;box-shadow:0 20px 38px rgba(0,0,0,.1);display:grid;gap:1rem;}
+    .insights-inline__hero-primary{display:flex;flex-direction:column;gap:.45rem;}
+    .insights-inline__eyebrow{font-size:.8rem;font-weight:800;letter-spacing:.05em;color:#5b6a62;text-transform:uppercase;}
+    .insights-inline__hero-value{font-size:1.85rem;font-weight:900;color:#143814;}
+    .insights-inline__hero p{margin:0;font-weight:700;color:#35513a;}
+    .insights-inline__hero-stats{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));}
+    .insights-inline__stat{background:#fff;border-radius:.95rem;padding:.75rem .85rem;box-shadow:0 12px 24px rgba(0,0,0,.08);display:flex;flex-direction:column;gap:.25rem;font-weight:800;color:#35513a;}
+    .insights-inline__stat span{font-size:.78rem;text-transform:uppercase;letter-spacing:.05em;color:#5b6a62;}
+    .insights-inline__stat strong{font-size:1.1rem;font-weight:900;color:#143814;}
+    .insights-inline__stat strong.negative{color:#C62828;}
+    .insights-inline__stat strong.positive{color:#1F6D1C;}
+    .insights-inline__grid{display:grid;gap:1rem;}
+    @media (min-width:860px){.insights-inline__grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
+    .insights-inline__card{background:#fff;border-radius:1rem;border:1px solid rgba(0,0,0,.05);box-shadow:0 14px 28px rgba(0,0,0,.08);padding:1rem;display:flex;flex-direction:column;gap:.75rem;}
+    .insights-inline__card header{display:flex;justify-content:space-between;align-items:flex-start;gap:.6rem;}
+    .insights-inline__card h3{margin:0;font-size:1rem;font-weight:900;color:#143814;}
+    .insights-inline__card-meta{font-weight:700;color:#35513a;font-size:.85rem;}
+    .insights-inline__list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.6rem;}
+    .insights-inline__list li{display:flex;align-items:flex-start;gap:.6rem;}
+    .insights-inline__badge{min-width:2.2rem;height:2.2rem;border-radius:999px;background:#FFE36A;color:#143814;font-weight:900;display:flex;align-items:center;justify-content:center;font-size:.95rem;}
+    .insights-inline__list-body{display:flex;flex-direction:column;gap:.25rem;font-weight:800;color:#143814;}
+    .insights-inline__list-body span{font-size:.82rem;font-weight:700;color:#5b6a62;}
+    .insights-inline__empty{background:rgba(25,74,31,.06);border-radius:.9rem;padding:.75rem .85rem;font-weight:700;color:#35513a;text-align:center;}
+    .insights-inline__card[data-role="coverage"] .insights-inline__badge{background:rgba(198,40,40,.16);color:#8b1d1d;}
+    .insights-inline__card[data-role="ledger"] .insights-inline__badge{background:rgba(42,150,38,.18);color:#1F6D1C;}
+    .insights-inline__card[data-role="timeline"] .insights-inline__badge{background:rgba(16,86,155,.18);color:#0f4c81;}
     .insights-kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem;}
     .insights-kpi-grid .kpi{background:#f4faf3;border-radius:12px;padding:.75rem .9rem;display:flex;flex-direction:column;gap:.2rem;}
     .insights-kpi-grid .kpi-label{font-size:.85rem;color:#4b5563;text-transform:uppercase;letter-spacing:.05em;}
@@ -419,9 +731,6 @@ function injectInlineStyles() {
     .insights-forecast-meta .metric-value{font-size:1.35rem;font-weight:600;color:#0f172a;}
     .insights-forecast-chart{width:100%;min-height:240px;}
   `;
-  const style = document.createElement('style');
-  style.id = 'insights-inline-styles';
-  style.textContent = css;
   document.head.appendChild(style);
 }
 
@@ -503,129 +812,91 @@ export function renderInzichtenPage(container) {
   injectInlineStyles();
 
   const events = Array.isArray(db?.evenementen) ? db.evenementen : [];
-  const totalEvents = events.length;
-  const activeEvents = events.filter(ev => !isClosed(ev)).length;
-  const closedEvents = totalEvents - activeEvents;
-  const totalOmzetEntries = events.reduce((sum, ev) => sum + (collectOmzetEntries(ev).length || 0), 0);
+  const state = {
+    days: '30',
+    eventId: '__ALL__'
+  };
 
   mount.innerHTML = '';
   mount.classList.add('panel-stack');
 
-  const header = document.createElement('div');
-  header.className = 'panel-header';
-  header.innerHTML = '<h2>📈 Inzichten</h2>';
+  const wrapper = document.createElement('div');
+  wrapper.className = 'insights-inline';
+  wrapper.innerHTML = buildInlineInsightsMarkup(events, state);
 
-  const actionBar = document.createElement('div');
-  actionBar.className = 'panel-actions';
-  const openModalBtn = document.createElement('button');
-  openModalBtn.className = 'btn-secondary';
-  openModalBtn.textContent = '📊 Open uitgebreide inzichten';
-  openModalBtn.onclick = () => openInzichtenModal();
-  actionBar.appendChild(openModalBtn);
-  header.appendChild(actionBar);
-  mount.appendChild(header);
+  const openModalBtn = wrapper.querySelector('[data-role="open-modal"]');
+  openModalBtn?.addEventListener('click', () => openInzichtenModal());
 
-  const kpiCard = document.createElement('section');
-  kpiCard.className = 'panel-card';
-  kpiCard.innerHTML = `
-    <div class="insights-kpi-grid">
-      <div class="kpi"><span class="kpi-label">Evenementen totaal</span><strong class="kpi-value">${totalEvents}</strong></div>
-      <div class="kpi"><span class="kpi-label">Actief / gepland</span><strong class="kpi-value">${activeEvents}</strong></div>
-      <div class="kpi"><span class="kpi-label">Afgerond</span><strong class="kpi-value">${closedEvents}</strong></div>
-      <div class="kpi"><span class="kpi-label">Dagomzet registraties</span><strong class="kpi-value">${totalOmzetEntries}</strong></div>
-    </div>
-  `;
-  mount.appendChild(kpiCard);
+  const eventSelect = wrapper.querySelector('[data-role="event"]');
+  populateEventSelect(eventSelect, events, state.eventId);
 
-  const infoCard = document.createElement('section');
-  infoCard.className = 'panel-card';
-  infoCard.innerHTML = `
-    <h3>Snelle analyse</h3>
-    <p class="muted">Gebruik de uitgebreide inzichten voor grafieken, exports en forecasts. Deze verkorte weergave toont een snapshot van de huidige database.</p>
-    <ul class="insights-list">
-      <li>Openstaande evenementen: <strong>${activeEvents}</strong></li>
-      <li>Evenementen met notities: <strong>${countWithNote(events)}</strong></li>
-      <li>Gemiddelde dagomzetregistraties per event: <strong>${totalEvents ? (totalOmzetEntries / totalEvents).toFixed(1) : '0.0'}</strong></li>
-    </ul>
-  `;
-  mount.appendChild(infoCard);
+  const rangeButtons = Array.from(wrapper.querySelectorAll('[data-range]'));
+  setActiveRange(rangeButtons, state.days);
 
-  const forecast = computeForecastSnapshot(events);
-  const forecastCard = document.createElement('section');
-  forecastCard.className = 'panel-card insights-forecast-card';
-  forecastCard.innerHTML = `
-    <div class="insights-forecast-head">
-      <div>
-        <h3>Winstprognose</h3>
-        <p class="muted">Verwachte omzet berekend op basis van geregistreerde dagen en gemiddelde marge.</p>
-      </div>
-      <div class="insights-forecast-meta">
-        <div class="metric">
-          <span class="metric-label">Gemiddelde marge</span>
-          <span class="metric-value">${formatMarginPercentage(forecast.averageMargin)}</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Verwachte omzet</span>
-          <span class="metric-value">${formatCurrencyValue(forecast.expectedRevenue || 0, 'EUR')}</span>
-        </div>
-        <div class="metric">
-          <span class="metric-label">Winstprognose</span>
-          <span class="metric-value">${formatCurrencyValue(forecast.forecastProfit || 0, 'EUR')}</span>
-        </div>
-      </div>
-    </div>
-    <div class="insights-forecast-chart">
-      <canvas id="insightsForecastChart" role="img" aria-label="Verhouding tussen actuele en verwachte omzet en winst"></canvas>
-    </div>
-  `;
-  mount.appendChild(forecastCard);
+  const loadingEl = wrapper.querySelector('[data-role="loading"]');
+  const heroEl = wrapper.querySelector('[data-role="hero"]');
+  const gridEl = wrapper.querySelector('[data-role="grid"]');
 
-  const canvas = forecastCard.querySelector('#insightsForecastChart');
-  if (canvas && typeof window !== 'undefined' && window.Chart) {
-    const ctx = canvas.getContext('2d');
-    if (canvas._chart) {
-      canvas._chart.destroy();
-    }
-    canvas._chart = new window.Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: ['Omzet', 'Winst'],
-        datasets: [
-          {
-            label: 'Actueel',
-            data: [forecast.actualRevenue, forecast.actualProfit],
-            backgroundColor: '#2A9626'
-          },
-          {
-            label: 'Verwachting',
-            data: [forecast.expectedRevenue, forecast.forecastProfit],
-            backgroundColor: '#FFC500'
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            position: 'bottom'
-          }
-        },
-        scales: {
-          y: {
-            beginAtZero: true,
-            ticks: {
-              callback: (value) => formatCurrencyValue(value, 'EUR')
-            }
-          }
-        }
-      }
+  const filtersNote = wrapper.querySelector('.insights-inline__filters-note');
+  const productMeta = wrapper.querySelector('[data-role="product-meta"]');
+  const productList = wrapper.querySelector('[data-role="product-list"]');
+  const ledgerMeta = wrapper.querySelector('[data-role="ledger-meta"]');
+  const ledgerList = wrapper.querySelector('[data-role="ledger-list"]');
+  const timelineMeta = wrapper.querySelector('[data-role="timeline-meta"]');
+  const timelineList = wrapper.querySelector('[data-role="timeline-list"]');
+  const coverageMeta = wrapper.querySelector('[data-role="coverage-meta"]');
+  const coverageList = wrapper.querySelector('[data-role="coverage-list"]');
+
+  mount.appendChild(wrapper);
+
+  rangeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      const value = btn.dataset.range || '30';
+      if (state.days === value) return;
+      state.days = value;
+      setActiveRange(rangeButtons, value);
+      refresh();
     });
-  } else if (canvas) {
-    canvas.replaceWith(Object.assign(document.createElement('p'), {
-      className: 'muted',
-      textContent: 'Grafiek niet beschikbaar (Chart.js niet geladen).'
-    }));
+  });
+
+  eventSelect?.addEventListener('change', () => {
+    state.eventId = eventSelect.value || '__ALL__';
+    refresh();
+  });
+
+  refresh();
+
+  async function refresh() {
+    showLoadingState(loadingEl, heroEl, gridEl, true);
+    try {
+      const filter = {
+        eventId: state.eventId,
+        locatie: '__ALL__',
+        type: '__ALL__',
+        days: state.days,
+        curr: 'EUR'
+      };
+      const insights = await loadSales(filter);
+      const currentEventLabel = resolveEventLabel(state.eventId, events);
+      const currentRangeLabel = buildRangeLabel(state.days);
+      if (filtersNote) {
+        filtersNote.textContent = `${currentEventLabel} · ${currentRangeLabel}`;
+      }
+      renderInlineHero(heroEl, insights, events, state);
+      renderInlineProducts(productList, productMeta, insights);
+      renderInlineLedger(ledgerList, ledgerMeta, insights);
+      renderInlineTimeline(timelineList, timelineMeta, insights, state);
+      renderInlineCoverage(coverageList, coverageMeta, insights, events);
+      showLoadingState(loadingEl, heroEl, gridEl, false);
+    } catch (err) {
+      console.warn('[POS] kon inline inzichten niet laden', err);
+      if (loadingEl) {
+        const message = err?.message || String(err || 'Onbekende fout');
+        loadingEl.textContent = `Kon inzichten niet laden: ${message}`;
+      }
+      showLoadingState(loadingEl, heroEl, gridEl, false, true);
+    }
   }
 }
 

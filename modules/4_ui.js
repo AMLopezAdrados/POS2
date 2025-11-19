@@ -3,6 +3,7 @@
 // Centrale store als enige state bron
 import { store } from './store.js';
 import { apiFetch } from './api.js';
+import { addVerkoopMutatie, setPaperChecklistEntry } from './3_data.js';
 
 // ============ Globale UI Helpers ============
 
@@ -117,10 +118,14 @@ export async function showMainShell() {
     renderReisPlannerWidget();
 
     // sales UI wordt elders getriggerd via store events
+    ensureQuickSaleFab();
 }
 
 // backwards compat
 export const showMainMenu = showMainShell;
+
+let quickSaleFabInitialized = false;
+let quickSaleModalContext = null;
 
 // ============ Topbar ============
 
@@ -128,33 +133,149 @@ function renderTopbar() {
     const topbarMount = document.getElementById('appTopbar');
     if (!topbarMount) return;
 
-    const title = getActiveTitle();
+    const activeDay = store.getActiveEventDay?.();
+    const session = store.state.session || {};
+    const activeEvent = resolveActiveEventRecord();
+    const eventTitle = buildTopbarEventTitle(activeDay, activeEvent);
+    const contextMarkup = buildTopbarContextChips(activeDay, activeEvent, session);
 
     topbarMount.className = 'app-topbar';
     topbarMount.innerHTML = `
         <div class="tb-left">
-            <div class="tb-title">${title}</div>
+            ${eventTitle}
         </div>
         <div class="tb-right">
-            <span id="netBadge" title="Netwerkstatus"></span>
+            ${contextMarkup}
+            <span id="netBadge" class="net" title="Netwerkstatus"></span>
         </div>
     `;
 
-    updateNetworkStatus(); // Zet de initiële status
+    const dayButton = topbarMount.querySelector('#topbarActiveDayBtn');
+    if (dayButton) {
+        dayButton.addEventListener('click', () => navigationActionHandler('daginfo'));
+    }
+
+    updateNetworkStatus();
 }
 
-function getActiveTitle() {
-    const activeDay = store.getActiveEventDay?.();
-    if (activeDay) {
-        const prefix = isToday(activeDay.date) ? 'Vandaag' : 'Actieve dag';
-        const eventName = (activeDay.eventName || '').trim();
-        const location = (activeDay.meta?.locatie || '').trim();
-        const dateLabel = formatTopbarDate(activeDay.date);
-        const detailParts = [eventName, location, dateLabel].filter(Boolean);
-        const detail = detailParts.length ? detailParts.join(' • ') : null;
-        return detail ? `${prefix}: ${detail}` : `${prefix}: Dagselectie`;
+function buildTopbarEventTitle(activeDay, activeEvent) {
+    if (!activeDay) {
+        return `
+            <button type="button" class="tb-event tb-event--empty" id="topbarActiveDayBtn">
+                <span class="tb-event__icon" aria-hidden="true">📅</span>
+                <span class="tb-event__content">
+                    <span class="tb-event__title">Geen dag actief</span>
+                    <span class="tb-event__meta">Kies een event op het dashboard</span>
+                </span>
+            </button>
+        `;
     }
-    return "Olga's Cheese POS";
+
+    const title = escapeHtml(activeEvent?.naam || activeDay.eventName || 'Actief event');
+    const location = escapeHtml(activeEvent?.locatie || activeDay.meta?.locatie || 'Onbekende locatie');
+    const date = escapeHtml(formatTopbarDate(activeDay.date) || activeDay.date || 'Datum onbekend');
+
+    return `
+        <button type="button" class="tb-event" id="topbarActiveDayBtn">
+            <span class="tb-event__icon" aria-hidden="true">📅</span>
+            <span class="tb-event__content">
+                <span class="tb-event__title">${title}</span>
+                <span class="tb-event__meta">${location} • ${date}</span>
+            </span>
+            <span class="tb-event__cta" aria-hidden="true">Daginfo</span>
+        </button>
+    `;
+}
+
+function buildTopbarContextChips(activeDay, activeEvent, session) {
+    const chips = [];
+
+    const userName = escapeHtml(session?.user?.naam || session?.user?.name || session?.user?.username || 'Ingelogd');
+    const userChip = `
+        <span class="tb-chip tb-chip--user">
+            <span class="tb-chip__icon" aria-hidden="true">👤</span>
+            <span class="tb-chip__content">
+                <span class="tb-chip__title">${userName}</span>
+                <span class="tb-chip__meta">Aanwezig</span>
+            </span>
+        </span>
+    `;
+    chips.push(userChip);
+
+    const busId = session?.busId || session?.meta?.bus;
+    if (busId) {
+        chips.push(`
+            <span class="tb-chip tb-chip--bus">
+                <span class="tb-chip__icon" aria-hidden="true">🚌</span>
+                <span class="tb-chip__content">
+                    <span class="tb-chip__title">Bus ${escapeHtml(String(busId).toUpperCase())}</span>
+                    <span class="tb-chip__meta">Actief</span>
+                </span>
+            </span>
+        `);
+    }
+
+    if (activeDay && activeEvent) {
+        const mutationTotals = aggregateEventMutationTotals(activeEvent);
+        const total = mutationTotals.total || 0;
+        const badgeLabel = total === 1 ? 'stuk geregistreerd' : 'stuks geregistreerd';
+        chips.push(`
+            <span class="tb-chip tb-chip--mutaties">
+                <span class="tb-chip__icon" aria-hidden="true">⚡</span>
+                <span class="tb-chip__content">
+                    <span class="tb-chip__title">${total}</span>
+                    <span class="tb-chip__meta">${badgeLabel}</span>
+                </span>
+            </span>
+        `);
+
+        const transferTotal = mutationTotals?.transfers?.total || 0;
+        if (transferTotal > 0) {
+            const transferLabel = transferTotal === 1 ? 'stuk verplaatst' : 'stuks verplaatst';
+            chips.push(`
+                <span class="tb-chip tb-chip--transfer">
+                    <span class="tb-chip__icon" aria-hidden="true">↔︎</span>
+                    <span class="tb-chip__content">
+                        <span class="tb-chip__title">${transferTotal}</span>
+                        <span class="tb-chip__meta">${transferLabel}</span>
+                    </span>
+                </span>
+            `);
+        }
+
+        const paperStatus = computePaperChecklistStatus(activeEvent, mutationTotals);
+        if (paperStatus.total > 0) {
+            const outstandingCount = paperStatus.outstanding.length;
+            const done = outstandingCount === 0;
+            const icon = done ? '✅' : '📝';
+            const title = done ? 'Alles ingevoerd' : `${outstandingCount}`;
+            const meta = done ? 'Papier → app klaar' : (outstandingCount === 1 ? 'product open' : 'producten open');
+            chips.push(`
+                <span class="tb-chip tb-chip--paper">
+                    <span class="tb-chip__icon" aria-hidden="true">${icon}</span>
+                    <span class="tb-chip__content">
+                        <span class="tb-chip__title">${escapeHtml(String(title))}</span>
+                        <span class="tb-chip__meta">${escapeHtml(meta)}</span>
+                    </span>
+                </span>
+            `);
+        }
+    }
+
+    return `<div class="tb-context">${chips.join('')}</div>`;
+}
+
+function resolveActiveEventRecord() {
+    const activeDay = store.getActiveEventDay?.();
+    if (!activeDay) return null;
+    const events = Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : [];
+    return events.find((event) => {
+        const candidateId = event.id ?? event.uuid ?? event.slug ?? event.naam;
+        return (
+            String(candidateId) === String(activeDay.eventId)
+            || String(event.naam).toLowerCase() === String(activeDay.eventName || '').toLowerCase()
+        );
+    }) || null;
 }
 
 function formatTopbarDate(ymd) {
@@ -205,6 +326,8 @@ function ensureTopbarStateListeners() {
     const rerender = () => renderTopbar();
     store.on('activeDay:changed', rerender);
     store.on('db:loaded', rerender);
+    store.on('session:changed', rerender);
+    store.on('events:updated', rerender);
 }
 
 // Netwerkstatus listener (wordt maar 1x gekoppeld)
@@ -292,6 +415,13 @@ const navigationActionHandler = async (action) => {
                 markActiveNav(action);
                 window.scrollTo({ top: 0, behavior: 'smooth' });
                 break;
+            case 'quickSale':
+                if (!activeDay) {
+                    showAlert('Geen actief evenement geselecteerd.', 'warning');
+                    break;
+                }
+                openQuickSaleModal();
+                break;
             case 'dagomzet': {
                 setActivePanel('dashboard');
                 markActiveNav('dashboard');
@@ -362,39 +492,31 @@ function renderBottomNav() {
     const navMount = document.getElementById('appBottomBar');
     if (!navMount) return;
 
-    const user = JSON.parse(localStorage.getItem('gebruiker') || '{}');
-    const isAdmin = user?.role === 'admin';
-
     navMount.setAttribute('role', 'menubar');
     navMount.setAttribute('aria-label', 'Hoofdmenu');
 
-    const navItems = [
-        { action: 'dashboard', icon: '🏠', label: 'Dashboard' },
-        { action: 'daginfo', icon: 'ℹ️', label: 'Daginfo', requiresActiveDay: true },
-        { action: 'voorraad', icon: '📦', label: 'Voorraad' },
-        { action: 'events', icon: '🎪', label: 'Events' },
-        { action: 'reis', icon: '✈️', label: 'Reis' },
-        { action: 'accounting', icon: '💶', label: 'Accounting' },
-        { action: 'inzichten', icon: '📈', label: 'Inzicht' },
-        { action: 'settings', icon: '⚙️', label: 'Instellingen' }
-    ];
+    const { isAdmin, items } = buildBottomNavItems();
 
-    if (isAdmin) {
-        navItems.splice(4, 0, { action: 'gebruikers', icon: '👤', label: 'Team' });
+    navMount.innerHTML = items
+        .map((item) => {
+            const attrs = [`data-action="${item.action}"`];
+            if (item.requiresActiveDay) attrs.push('data-requires-active-day="true"');
+            if (item.locked) attrs.push('data-locked="true"');
+            return `
+                <button type="button" role="menuitem" ${attrs.join(' ')} aria-pressed="false">
+                    <span class="icon">${item.icon}</span>
+                    <span class="label">${item.label}</span>
+                    <span class="badge" data-role="badge" data-action="${item.action}"></span>
+                </button>
+            `;
+        })
+        .join('');
+
+    if (isAdmin && !items.some((item) => item.action === 'gebruikers')) {
+        console.warn('[POS] Bottom nav rendering mist gebruikers-item voor admin');
     }
 
-    navMount.innerHTML = navItems.map(item => {
-        const attrs = [`data-action="${item.action}"`];
-        if (item.requiresActiveDay) attrs.push('data-requires-active-day="true"');
-        return `
-            <button type="button" role="menuitem" ${attrs.join(' ')} aria-pressed="false">
-                <span class="icon">${item.icon}</span>
-                <span class="label">${item.label}</span>
-            </button>
-        `;
-    }).join('');
-
-    navMount.querySelectorAll('button[data-action]').forEach(btn => {
+    navMount.querySelectorAll('button[data-action]').forEach((btn) => {
         btn.addEventListener('click', () => navigationActionHandler(btn.dataset.action));
     });
 
@@ -403,20 +525,100 @@ function renderBottomNav() {
     markActiveNav('dashboard');
 }
 
+function buildBottomNavItems() {
+    const session = store.state.session || {};
+    const userRole = session?.user?.role || session?.user?.rol;
+    const isAdmin = String(userRole || '').toLowerCase() === 'admin';
+    const activeDay = store.getActiveEventDay?.();
+    const activeEvent = resolveActiveEventRecord();
+    const mutationTotals = activeDay && activeEvent ? aggregateEventMutationTotals(activeEvent) : { total: 0 };
+    const pendingAccounting = Array.isArray(store.state.db?.accounting?.pendingQueue)
+        ? store.state.db.accounting.pendingQueue.length
+        : 0;
+    const busLabel = session?.busId || session?.meta?.bus || '';
+
+    const baseItems = [
+        { action: 'dashboard', icon: '🏠', label: 'Dashboard' },
+        { action: 'daginfo', icon: '📅', label: 'Daginfo', requiresActiveDay: true },
+        { action: 'dagomzet', icon: '💶', label: 'Omzet', requiresActiveDay: true },
+        { action: 'quickSale', icon: '⚡', label: 'Snel invoer', requiresActiveDay: true },
+        { action: 'voorraad', icon: '📦', label: 'Voorraad' },
+        { action: 'events', icon: '🎪', label: 'Events' },
+        { action: 'reis', icon: '🧾', label: 'Paklijsten' },
+        { action: 'accounting', icon: '📒', label: 'Boekhouding' },
+        { action: 'inzichten', icon: '📈', label: 'Inzichten' },
+        { action: 'settings', icon: '⚙️', label: 'Instellingen' }
+    ];
+
+    if (isAdmin) {
+        baseItems.splice(6, 0, { action: 'gebruikers', icon: '👥', label: 'Team' });
+    }
+
+    const decorated = baseItems.map((item) => {
+        const next = { ...item };
+        if (item.action === 'daginfo' && activeDay?.date) {
+            next.badge = formatTopbarDate(activeDay.date) || activeDay.date;
+        }
+        if (item.action === 'quickSale' && mutationTotals.total > 0) {
+            next.badge = `${mutationTotals.total}`;
+        }
+        if (item.action === 'voorraad' && busLabel) {
+            next.badge = String(busLabel).toUpperCase();
+        }
+        if (item.action === 'accounting' && pendingAccounting > 0) {
+            next.badge = `${pendingAccounting}`;
+        }
+        return next;
+    });
+
+    return { isAdmin, items: decorated };
+}
+
 let bottomNavStateBound = false;
 function ensureBottomNavStateListeners() {
     if (bottomNavStateBound) return;
     bottomNavStateBound = true;
     const update = () => updateBottomNavState();
     store.on('activeDay:changed', update);
+    store.on('session:changed', update);
+    store.on('events:updated', update);
+    store.on('db:loaded', update);
+    store.on?.('accounting:pending', update);
 }
 
 function updateBottomNavState() {
     const nav = document.getElementById('appBottomBar');
     if (!nav) return;
-    const hasActiveDay = Boolean(store.getActiveEventDay?.());
-    nav.querySelectorAll('button[data-requires-active-day]').forEach(btn => {
+    const activeDay = store.getActiveEventDay?.();
+    const activeEvent = resolveActiveEventRecord();
+    const mutationTotals = activeDay && activeEvent ? aggregateEventMutationTotals(activeEvent) : { total: 0 };
+    const hasActiveDay = Boolean(activeDay);
+    const busLabel = store.state.session?.busId || store.state.session?.meta?.bus || '';
+    const pendingAccounting = Array.isArray(store.state.db?.accounting?.pendingQueue)
+        ? store.state.db.accounting.pendingQueue.length
+        : 0;
+
+    nav.querySelectorAll('button[data-requires-active-day]').forEach((btn) => {
         btn.toggleAttribute('disabled', !hasActiveDay);
+    });
+
+    nav.querySelectorAll('span[data-role="badge"]').forEach((badge) => {
+        const action = badge.dataset.action;
+        let value = '';
+        if (action === 'daginfo' && hasActiveDay && activeDay?.date) {
+            value = formatTopbarDate(activeDay.date) || activeDay.date;
+        }
+        if (action === 'quickSale') {
+            value = mutationTotals.total > 0 ? `${mutationTotals.total}` : '';
+        }
+        if (action === 'voorraad' && busLabel) {
+            value = String(busLabel).toUpperCase();
+        }
+        if (action === 'accounting' && pendingAccounting > 0) {
+            value = `${pendingAccounting}`;
+        }
+        badge.textContent = value;
+        badge.classList.toggle('badge--hidden', !value);
     });
 }
 
@@ -524,6 +726,7 @@ function renderEventCards() {
     }
     if (highlightsMount) {
         highlightsMount.innerHTML = renderDashboardHighlights(current, upcoming, aggregate);
+        bindDashboardHighlightEvents(highlightsMount);
     }
 }
 
@@ -709,6 +912,13 @@ function bindDashboardSummaryActions(summaryMount) {
     });
 }
 
+function bindDashboardHighlightEvents(highlightsMount) {
+    if (!highlightsMount) return;
+    highlightsMount.querySelectorAll('[data-dashboard-action="openQuickSale"]').forEach((btn) => {
+        btn.addEventListener('click', () => openQuickSaleModal());
+    });
+}
+
 function renderDashboardEventDeck(mount, current, upcoming) {
     if (!Array.isArray(current) || !current.length) {
         if (!Array.isArray(upcoming) || !upcoming.length) {
@@ -835,6 +1045,43 @@ function buildDashboardTasks(current, upcoming) {
 
 function renderDashboardHighlights(current, upcoming, aggregate) {
     const cards = [];
+
+    const activeDay = store.getActiveEventDay?.();
+    const activeEvent = activeDay ? resolveActiveEventRecord() : null;
+    if (activeDay && activeEvent) {
+        const mutationTotals = aggregateEventMutationTotals(activeEvent);
+        const paperStatus = computePaperChecklistStatus(activeEvent, mutationTotals);
+        if (paperStatus.total > 0) {
+            const outstandingCount = paperStatus.outstanding.length;
+            const done = outstandingCount === 0;
+            const catalog = getCheeseProductCatalog();
+            const productLabels = paperStatus.outstanding
+                .slice(0, 3)
+                .map(id => escapeHtml(resolveCheeseProduct(catalog, id)?.naam || id));
+            const moreCount = Math.max(0, outstandingCount - productLabels.length);
+            const listMarkup = done
+                ? '<p class="dashboard-highlight-card__meta">Alle turflijsten zijn ingevoerd.</p>'
+                : `
+                    <ul class="paper-checklist-list">
+                        ${productLabels.map(label => `<li>${label}</li>`).join('')}
+                        ${moreCount > 0 ? `<li>+${moreCount} andere</li>` : ''}
+                    </ul>
+                `;
+            const headline = done
+                ? 'Papier ingevoerd'
+                : (outstandingCount === 1 ? '1 product nog invoeren' : `${outstandingCount} producten nog invoeren`);
+            cards.push(`
+                <article class="dashboard-highlight-card dashboard-highlight-card--paper">
+                    <span class="dashboard-highlight-card__icon">${done ? '✅' : '📝'}</span>
+                    <h3>${escapeHtml(headline)}</h3>
+                    ${listMarkup}
+                    <div class="dashboard-highlight-actions">
+                        <button type="button" class="btn-secondary" data-dashboard-action="openQuickSale">Checklist open</button>
+                    </div>
+                </article>
+            `);
+        }
+    }
 
     const topProduct = computeDashboardTopProduct(current);
     if (topProduct) {
@@ -3025,6 +3272,510 @@ function createCheeseTypeBuckets() {
     return buckets;
 }
 
+// ============ Quick Sale Flow ============
+
+function ensureQuickSaleFab() {
+    if (quickSaleFabInitialized) {
+        updateQuickSaleFabState();
+        return;
+    }
+    quickSaleFabInitialized = true;
+    injectQuickSaleStyles();
+    const fab = document.createElement('button');
+    fab.id = 'quickSaleFab';
+    fab.type = 'button';
+    fab.className = 'quick-sale-fab';
+    fab.innerHTML = '<span class="label">+ Verkoop</span>';
+    fab.addEventListener('click', () => openQuickSaleModal());
+    document.body.appendChild(fab);
+    updateQuickSaleFabState();
+    store.on?.('activeDay:changed', updateQuickSaleFabState);
+    store.on?.('session:changed', updateQuickSaleFabState);
+    store.on?.('events:updated', (payload) => {
+        if (!quickSaleModalContext) return;
+        if (!payload?.eventId || String(payload.eventId) !== String(quickSaleModalContext.eventId)) return;
+        renderQuickSaleModalContent(quickSaleModalContext);
+    });
+}
+
+function updateQuickSaleFabState() {
+    const fab = document.getElementById('quickSaleFab');
+    if (!fab) return;
+    const activeDay = store.getActiveEventDay?.();
+    const hasEvent = Boolean(activeDay?.eventId);
+    fab.disabled = !hasEvent;
+    fab.classList.toggle('quick-sale-fab--hidden', !hasEvent);
+}
+
+function openQuickSaleModal() {
+    const activeDay = store.getActiveEventDay?.();
+    if (!activeDay?.eventId) {
+        showAlert('Geen actief evenement geselecteerd.', 'error');
+        return;
+    }
+
+    const { overlay, box, close } = createModal({
+        onClose: () => {
+            quickSaleModalContext = null;
+        }
+    });
+    box.classList.add('quick-sale-modal');
+
+    const header = document.createElement('header');
+    header.className = 'quick-sale-modal__header';
+    header.innerHTML = `
+        <div>
+            <h2>Snelle verkoopregistratie</h2>
+            <p>${escapeHtml(activeDay.eventName || 'Onbekend event')} • ${escapeHtml(formatTopbarDate(activeDay.date) || '')}</p>
+        </div>
+        <button type="button" class="quick-sale-close" aria-label="Sluiten">×</button>
+    `;
+    header.querySelector('.quick-sale-close').addEventListener('click', close);
+    box.appendChild(header);
+
+    const content = document.createElement('div');
+    content.className = 'quick-sale-modal__body';
+    box.appendChild(content);
+
+    const context = {
+        eventId: activeDay.eventId,
+        busId: store.state.session?.busId || store.state.session?.meta?.bus || null,
+        content,
+        close
+    };
+    quickSaleModalContext = context;
+    renderQuickSaleModalContent(context);
+}
+
+function renderQuickSaleModalContent(context) {
+    if (!context || !context.content) return;
+    const event = (store.state.db?.evenementen || []).find(ev => String(ev.id) === String(context.eventId) || String(ev.naam) === String(context.eventId));
+    const mutationTotals = aggregateEventMutationTotals(event || {});
+    const products = getQuickSaleProducts();
+    const catalog = getCheeseProductCatalog();
+    const productMap = new Map();
+    products.forEach(product => {
+        if (!product?.id) return;
+        if (!productMap.has(product.id)) {
+            productMap.set(product.id, product);
+        }
+    });
+    const paperStatus = computePaperChecklistStatus(event || {}, mutationTotals);
+
+    const grid = document.createElement('div');
+    grid.className = 'quick-sale-grid';
+
+    products.forEach((product) => {
+        const amount = mutationTotals.products[product.id] || mutationTotals.products[product.name] || 0;
+        const transferAmount = mutationTotals?.transfers?.products?.[product.id]
+            || mutationTotals?.transfers?.products?.[product.name]
+            || 0;
+        const transferNote = transferAmount > 0
+            ? `<div class="quick-sale-card__note">↔︎ ${transferAmount} verplaatst</div>`
+            : '';
+        const card = document.createElement('article');
+        card.className = 'quick-sale-card';
+        card.dataset.product = product.id;
+        card.innerHTML = `
+            <header>
+                <div class="quick-sale-card__title">
+                    <h3>${escapeHtml(product.label)}</h3>
+                    <span class="type">${escapeHtml(product.type || '')}</span>
+                </div>
+                <div class="quick-sale-card__count" data-role="count">${amount || 0}</div>
+            </header>
+            ${transferNote}
+            <div class="quick-sale-card__actions">
+                <button type="button" data-action="delta" data-delta="-1" title="Correctie −1">−1</button>
+                <button type="button" data-action="delta" data-delta="1" title="+1 stuk">+1</button>
+                <button type="button" data-action="delta" data-delta="5" title="+5 stuks">+5</button>
+                <button type="button" data-action="snijkaas" data-delta="1" title="Snijkaas +1">Snijkaas</button>
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+
+    context.content.innerHTML = '';
+    context.content.appendChild(grid);
+
+    const checklistSection = buildQuickSaleChecklistSection(context.eventId, paperStatus, productMap, catalog);
+    if (checklistSection) {
+        context.content.appendChild(checklistSection);
+        checklistSection.addEventListener('change', (ev) => {
+            const input = ev.target.closest('input[data-product]');
+            if (!input) return;
+            handleQuickSaleChecklistToggle(context, input.dataset.product, input.checked, input);
+        });
+    }
+
+    if (!context.bound) {
+        context.content.addEventListener('click', (ev) => {
+            const btn = ev.target.closest('button[data-action]');
+            if (!btn) return;
+            const card = btn.closest('.quick-sale-card');
+            if (!card) return;
+            const productId = card.dataset.product;
+            const delta = Number(btn.dataset.delta || '0');
+            const action = btn.dataset.action;
+            const type = action === 'snijkaas' ? 'snijkaas' : 'quick';
+            handleQuickSaleAction(context, productId, delta, type);
+        });
+        context.bound = true;
+    }
+}
+
+async function handleQuickSaleAction(context, productId, delta, type) {
+    if (!context || !productId || !delta) return;
+    try {
+        await addVerkoopMutatie(context.eventId, {
+            productId,
+            quantity: delta,
+            type
+        }, { silent: true });
+        renderQuickSaleModalContent(context);
+        showAlert(`${delta > 0 ? '+' : ''}${delta} ${type === 'snijkaas' ? 'snijkaas' : 'verkoop'} opgeslagen.`, 'success');
+    } catch (err) {
+        console.error('[POS] addVerkoopMutatie failed', err);
+        showAlert('Opslaan van verkoopmutatie mislukt.', 'error');
+    }
+}
+
+function getQuickSaleProducts() {
+    const catalog = getCheeseProductCatalog();
+    const items = [];
+    const seen = new Set();
+    catalog.forEach((product) => {
+        if (!product) return;
+        const name = product.naam || product.name || product.id;
+        if (!name || seen.has(name)) return;
+        seen.add(name);
+        const type = normalizeCheeseType(product.type) || inferCheeseTypeFromName(name) || '';
+        items.push({
+            id: name,
+            name,
+            label: name,
+            type
+        });
+    });
+    items.sort((a, b) => {
+        if (a.type !== b.type) return a.type.localeCompare(b.type);
+        return a.label.localeCompare(b.label);
+    });
+    return items;
+}
+
+function buildQuickSaleChecklistSection(eventId, paperStatus, productMap, catalog) {
+    if (!paperStatus || paperStatus.total === 0) return null;
+    const section = document.createElement('section');
+    section.className = 'quick-sale-checklist';
+    section.dataset.eventId = eventId || '';
+
+    const outstanding = paperStatus.outstanding.length;
+    const done = outstanding === 0;
+    const title = done ? 'Papier ingevoerd' : 'Papier → app checklist';
+    const badge = done ? 'Klaar' : `${outstanding} open`;
+
+    const header = document.createElement('header');
+    header.className = 'quick-sale-checklist__header';
+    header.innerHTML = `
+        <div>
+            <h3>${escapeHtml(title)}</h3>
+            <p>${done ? 'Alle turfs zijn verwerkt.' : 'Vink af zodra je een product hebt ingevoerd.'}</p>
+        </div>
+        <span class="quick-sale-checklist__badge">${escapeHtml(badge)}</span>
+    `;
+    section.appendChild(header);
+
+    const list = document.createElement('ul');
+    list.className = 'quick-sale-checklist__list';
+
+    paperStatus.items.forEach((item) => {
+        const product = productMap.get(item.productId) || resolveCheeseProduct(catalog, item.productId) || {};
+        const label = product.label || product.naam || product.name || item.productId;
+        const breakdown = [];
+        if (item.saleQuantity > 0) {
+            breakdown.push(`${item.saleQuantity}× verkoop`);
+        }
+        if (item.transferQuantity > 0) {
+            breakdown.push(`${item.transferQuantity}× verplaatst`);
+        }
+        const quantityLabel = breakdown.length
+            ? `${item.quantity}× (${breakdown.join(' + ')})`
+            : `${item.quantity}×`;
+        const li = document.createElement('li');
+        li.className = 'quick-sale-checklist__item';
+        li.innerHTML = `
+            <label>
+                <input type="checkbox" data-product="${escapeHtml(item.productId)}" ${item.checked ? 'checked' : ''}>
+                <span class="quick-sale-checklist__name">${escapeHtml(label)}</span>
+            </label>
+            <small>${escapeHtml(quantityLabel)}</small>
+        `;
+        list.appendChild(li);
+    });
+
+    section.appendChild(list);
+    return section;
+}
+
+async function handleQuickSaleChecklistToggle(context, productId, checked, inputEl) {
+    if (!context || !productId) return;
+    if (inputEl) {
+        inputEl.disabled = true;
+    }
+    try {
+        await setPaperChecklistEntry(context.eventId, productId, checked, { silent: true });
+        renderQuickSaleModalContent(context);
+        showAlert(checked ? 'Gemarkeerd als ingevoerd.' : 'Markering verwijderd.', 'success');
+    } catch (err) {
+        console.error('[POS] paper checklist toggle failed', err);
+        showAlert('Bijwerken van checklist mislukt.', 'error');
+        if (inputEl) {
+            inputEl.checked = !checked;
+        }
+    } finally {
+        if (inputEl) {
+            inputEl.disabled = false;
+        }
+    }
+}
+
+function injectQuickSaleStyles() {
+    if (document.getElementById('quick-sale-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'quick-sale-styles';
+    style.textContent = `
+        .quick-sale-fab {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            background: #2A9626;
+            color: #fff;
+            border: none;
+            border-radius: 999px;
+            padding: 0.85rem 1.4rem;
+            font-size: 1rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            box-shadow: 0 18px 36px rgba(15, 23, 42, 0.18);
+            cursor: pointer;
+            z-index: 50;
+        }
+        .quick-sale-fab--hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .quick-sale-fab:disabled {
+            background: rgba(15, 23, 42, 0.2);
+            color: rgba(15, 23, 42, 0.55);
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+        .quick-sale-modal {
+            width: min(720px, calc(100vw - 2rem));
+            max-height: min(90vh, 820px);
+            display: flex;
+            flex-direction: column;
+            background: #fff;
+            border-radius: 24px;
+            overflow: hidden;
+        }
+        .quick-sale-modal__header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            padding: 1.25rem 1.5rem 0.75rem;
+            gap: 1rem;
+        }
+        .quick-sale-modal__header h2 {
+            margin: 0;
+            font-size: 1.45rem;
+        }
+        .quick-sale-modal__header p {
+            margin: 0.35rem 0 0;
+            color: #4b5563;
+            font-size: 0.95rem;
+        }
+        .quick-sale-close {
+            border: none;
+            background: rgba(15, 23, 42, 0.08);
+            border-radius: 999px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            width: 36px;
+            height: 36px;
+            cursor: pointer;
+        }
+        .quick-sale-modal__body {
+            padding: 0 1.5rem 1.5rem;
+            overflow-y: auto;
+        }
+        .quick-sale-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1rem;
+        }
+        .quick-sale-card { 
+            background: #f8fafc;
+            border-radius: 1rem;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+        }
+        .quick-sale-card header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 0.5rem;
+        }
+        .quick-sale-card__note {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #1f4a73;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin-top: -0.3rem;
+        }
+        .quick-sale-card__title h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            color: #143814;
+        }
+        .quick-sale-card__title .type {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(42, 150, 38, 0.12);
+            color: #27632a;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .quick-sale-card__count {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: #1f2937;
+        }
+        .quick-sale-card__actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.5rem;
+        }
+        .quick-sale-card__actions button {
+            border: none;
+            border-radius: 0.75rem;
+            padding: 0.65rem;
+            font-weight: 700;
+            font-size: 0.95rem;
+            cursor: pointer;
+            background: #fff;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+        }
+        .quick-sale-card__actions button[data-action="delta"][data-delta="1"],
+        .quick-sale-card__actions button[data-action="snijkaas"] {
+            background: rgba(42, 150, 38, 0.15);
+            color: #1f6d1c;
+        }
+        .quick-sale-card__actions button[data-action="delta"][data-delta="5"] {
+            background: rgba(255, 197, 0, 0.18);
+            color: #7c5f00;
+        }
+        .quick-sale-card__actions button[data-action="delta"][data-delta="-1"] {
+            background: rgba(231, 76, 60, 0.15);
+            color: #b02a1c;
+        }
+        .quick-sale-checklist {
+            margin-top: 1.5rem;
+            padding-top: 1rem;
+            border-top: 1px solid rgba(15, 23, 42, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .quick-sale-checklist__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .quick-sale-checklist__header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+        .quick-sale-checklist__header p {
+            margin: 0.25rem 0 0;
+            color: #4b5563;
+            font-size: 0.9rem;
+        }
+        .quick-sale-checklist__badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #FFC500;
+            color: #1f2937;
+            font-weight: 700;
+            padding: 0.35rem 0.85rem;
+            border-radius: 999px;
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+        .quick-sale-checklist__list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        .quick-sale-checklist__item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.75rem 0.85rem;
+            border-radius: 0.85rem;
+            background: rgba(248, 250, 252, 0.9);
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+        }
+        .quick-sale-checklist__item label {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 1rem;
+            color: #1f2937;
+            flex: 1;
+        }
+        .quick-sale-checklist__item input {
+            width: 1.2rem;
+            height: 1.2rem;
+        }
+        .quick-sale-checklist__item small {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #4b5563;
+        }
+        @media (max-width: 640px) {
+            .quick-sale-fab {
+                right: 1rem;
+                left: 1rem;
+                width: calc(100% - 2rem);
+                justify-content: center;
+            }
+            .quick-sale-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+        }
+    `;
+    document.head.appendChild(style);
+}
+
 function getCheeseProductsByType() {
     const result = { BG: [], ROOK: [], GEIT: [] };
     const producten = store.state.db?.producten || [];
@@ -3277,13 +4028,31 @@ function computeEventSalesSnapshot(event, endValues, productSales = {}) {
     const supplementTotals = sumCheeseEntries(normalizeSupplements(telling.supplements));
     const endTotals = toCheeseTotals(endValues);
 
+    const mutationTotals = aggregateEventMutationTotals(event);
+
     const categories = {
         BG: clampCheeseValue(startTotals.BG + supplementTotals.BG - endTotals.BG),
         ROOK: clampCheeseValue(startTotals.ROOK + supplementTotals.ROOK - endTotals.ROOK),
         GEIT: clampCheeseValue(startTotals.GEIT + supplementTotals.GEIT - endTotals.GEIT)
     };
+    const hasEndData = hasCheeseMeasurement(telling.end);
+    if (!hasEndData && mutationTotals.total > 0) {
+        categories.BG = mutationTotals.categories.BG;
+        categories.ROOK = mutationTotals.categories.ROOK;
+        categories.GEIT = mutationTotals.categories.GEIT;
+    } else {
+        ['BG', 'ROOK', 'GEIT'].forEach((type) => {
+            if (mutationTotals.categories[type] > categories[type]) {
+                categories[type] = mutationTotals.categories[type];
+            }
+        });
+    }
+
     const totalCategories = categories.BG + categories.ROOK + categories.GEIT;
     const productTotals = sanitizeProductSalesMap(productSales);
+    Object.entries(mutationTotals.products).forEach(([name, qty]) => {
+        productTotals[name] = (productTotals[name] || 0) + qty;
+    });
     const totalProducts = Object.values(productTotals).reduce((sum, value) => sum + value, 0);
     const calculatedAt = new Date().toISOString();
 
@@ -3310,6 +4079,165 @@ function sumCheeseEntries(list) {
         totals.GEIT += normalized.GEIT;
     }
     return totals;
+}
+
+function aggregateEventMutationTotals(event, options = {}) {
+    const entries = Array.isArray(event?.verkoopMutaties?.entries)
+        ? event.verkoopMutaties.entries
+        : [];
+    if (!entries.length) {
+        return {
+            total: 0,
+            categories: { BG: 0, ROOK: 0, GEIT: 0 },
+            products: {},
+            transfers: { total: 0, products: {}, entries: [] }
+        };
+    }
+
+    const allowedTypes = Array.isArray(options.includeTypes) && options.includeTypes.length
+        ? options.includeTypes.map((type) => String(type || '').toLowerCase())
+        : ['quick', 'snijkaas', 'correctie'];
+    const rawTotals = new Map();
+    const transferTotals = new Map();
+    const transferEntries = [];
+
+    entries.forEach((entry) => {
+        if (!entry || typeof entry !== 'object') return;
+        const productId = entry.productId || entry.product || entry.name;
+        const amount = toSafeNumber(entry.quantity);
+        if (!productId || !Number.isFinite(amount) || amount === 0) return;
+        const key = String(productId);
+        const type = String(entry.type || '').toLowerCase();
+        if (type === 'transfer') {
+            const direction = entry.meta?.transfer?.direction || null;
+            if (direction !== 'in') {
+                transferTotals.set(key, (transferTotals.get(key) || 0) + Math.abs(amount));
+            }
+            const qty = Math.max(0, Math.round(Math.abs(amount)));
+            if (qty > 0) {
+                transferEntries.push({
+                    productId: key,
+                    quantity: qty,
+                    busId: entry.busId || null,
+                    direction,
+                    fromBus: entry.meta?.transfer?.from || null,
+                    toBus: entry.meta?.transfer?.to || null,
+                    createdAt: entry.createdAt || entry.updatedAt || null
+                });
+            }
+            return;
+        }
+        if (allowedTypes.length && !allowedTypes.includes(type)) {
+            return;
+        }
+        rawTotals.set(key, (rawTotals.get(key) || 0) + amount);
+    });
+
+    const products = {};
+    rawTotals.forEach((value, key) => {
+        const qty = Math.max(0, Math.round(value));
+        if (qty > 0) {
+            products[key] = qty;
+        }
+    });
+
+    const transferProducts = {};
+    transferTotals.forEach((value, key) => {
+        const qty = Math.max(0, Math.round(Math.abs(value)));
+        if (qty > 0) {
+            transferProducts[key] = qty;
+        }
+    });
+
+    const categories = { BG: 0, ROOK: 0, GEIT: 0 };
+    const catalog = getCheeseProductCatalog();
+    Object.entries(products).forEach(([name, qty]) => {
+        const product = resolveCheeseProduct(catalog, name);
+        const type = normalizeCheeseType(product?.type) || inferCheeseTypeFromName(name);
+        if (type && categories[type] != null) {
+            categories[type] += qty;
+        }
+    });
+
+    const total = categories.BG + categories.ROOK + categories.GEIT
+        || Object.values(products).reduce((sum, qty) => sum + qty, 0);
+
+    const transferTotal = Object.values(transferProducts).reduce((sum, qty) => sum + qty, 0);
+
+    return {
+        total,
+        categories,
+        products,
+        transfers: {
+            total: transferTotal,
+            products: transferProducts,
+            entries: transferEntries
+        }
+    };
+}
+
+function computePaperChecklistStatus(event, mutationTotals = null) {
+    const totals = mutationTotals || aggregateEventMutationTotals(event || {});
+    const saleProducts = totals?.products || {};
+    const transferProducts = totals?.transfers?.products || {};
+    const productKeys = new Set([
+        ...Object.keys(saleProducts),
+        ...Object.keys(transferProducts)
+    ]);
+    const checklistRaw = event?.verkoopMutaties?.paperChecklist || {};
+    const normalizedChecklist = new Map();
+
+    Object.entries(checklistRaw).forEach(([productId, entry]) => {
+        const key = normalizeProductKey(productId);
+        if (!key) return;
+        const checkedAt = entry?.checkedAt || entry?.timestamp || entry?.ts || null;
+        normalizedChecklist.set(key, {
+            checkedAt: checkedAt ? new Date(checkedAt).toISOString() : null,
+            userId: entry?.userId || entry?.user || entry?.by || null,
+            originalKey: productId
+        });
+    });
+
+    const items = [];
+    productKeys.forEach((productId) => {
+        const normalized = normalizeProductKey(productId);
+        if (!normalized) return;
+        const saleQuantity = Math.max(0, Math.round(Number(saleProducts[productId]) || 0));
+        const transferQuantity = Math.max(0, Math.round(Number(transferProducts[productId]) || 0));
+        const quantity = saleQuantity + transferQuantity;
+        if (!quantity) return;
+        const checklistEntry = normalizedChecklist.get(normalized);
+        let origin = 'sale';
+        if (transferQuantity > 0 && saleQuantity > 0) {
+            origin = 'mixed';
+        } else if (transferQuantity > 0) {
+            origin = 'transfer';
+        }
+        items.push({
+            productId,
+            normalized,
+            quantity,
+            saleQuantity,
+            transferQuantity,
+            origin,
+            checked: Boolean(checklistEntry?.checkedAt),
+            checklistEntry
+        });
+    });
+
+    items.sort((a, b) => a.productId.localeCompare(b.productId, 'nl', { sensitivity: 'base' }));
+
+    const total = items.length;
+    const checked = items.filter(item => item.checked).length;
+    const outstanding = items.filter(item => !item.checked).map(item => item.productId);
+
+    return {
+        total,
+        checked,
+        outstanding,
+        items,
+        checklist: checklistRaw
+    };
 }
 
 function clampCheeseValue(val) {
@@ -4145,11 +5073,12 @@ export function renderActiveDayPanel() {
         return;
     }
 
-    const events = Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : [];
-    const evt = events.find(e => {
-        const candidateId = e.id ?? e.uuid ?? e.slug ?? e.naam;
-        return candidateId === activeDay.eventId || e.naam === activeDay.eventName;
-    }) || {};
+    const evt = resolveActiveEventRecord() || {};
+    const mutationTotals = aggregateEventMutationTotals(evt);
+    const categoryChips = buildDayinfoCategoryChips(mutationTotals.categories);
+    const topProducts = buildDayinfoTopProducts(mutationTotals.products);
+    const busLabel = store.state.session?.busId || store.state.session?.meta?.bus || '';
+    const userName = store.state.session?.user?.naam || store.state.session?.user?.name || '';
 
     const rows = [
         ['Evenement', evt.naam || activeDay.eventName || '-'],
@@ -4167,19 +5096,111 @@ export function renderActiveDayPanel() {
     if (evt.type) notes.push(`Type: ${evt.type}`);
 
     panel.innerHTML = `
-        <section class="panel-card">
-            <h3>Daginfo</h3>
+        <section class="panel-card dayinfo-hero">
+            <header class="dayinfo-hero__header">
+                <div>
+                    <p class="dayinfo-hero__eyebrow">Vandaag</p>
+                    <h2 class="dayinfo-hero__title">${escapeHtml(evt.naam || activeDay.eventName || 'Actieve dag')}</h2>
+                    <p class="dayinfo-hero__meta">${escapeHtml(evt.locatie || activeDay.meta?.locatie || 'Onbekende locatie')} • ${escapeHtml(formatFullDate(activeDay.date))}</p>
+                </div>
+                <div class="dayinfo-hero__badges">
+                    ${userName ? `<span class="dayinfo-badge">👤 ${escapeHtml(userName)}</span>` : ''}
+                    ${busLabel ? `<span class="dayinfo-badge">🚌 Bus ${escapeHtml(String(busLabel).toUpperCase())}</span>` : ''}
+                    <span class="dayinfo-badge">⚡ ${mutationTotals.total || 0} verkopen</span>
+                    ${mutationTotals?.transfers?.total ? `<span class="dayinfo-badge dayinfo-badge--transfer">↔︎ ${mutationTotals.transfers.total} verplaatst</span>` : ''}
+                </div>
+            </header>
+            <div class="dayinfo-hero__chips">${categoryChips}</div>
+            <div class="dayinfo-hero__actions">
+                <button type="button" class="dayinfo-action" data-day-action="quickSale">⚡ Snelle verkoop</button>
+                <button type="button" class="dayinfo-action" data-day-action="omzet">💶 Dagomzet</button>
+                <button type="button" class="dayinfo-action" data-day-action="voorraad">📦 Voorraad</button>
+                <button type="button" class="dayinfo-action" data-day-action="planner">🧾 Paklijst</button>
+            </div>
+        </section>
+        <section class="panel-card dayinfo-meta">
+            <h3>Details</h3>
             <div class="meta-grid">${rows}</div>
             ${notes.length ? `<p class="muted" style="margin-top:.8rem">${notes.join(' • ')}</p>` : ''}
-            <div class="panel-footer">
-                <button class="btn-primary" id="gotoDagomzetBtn">➕ Dagomzet registreren</button>
+        </section>
+        <section class="panel-card dayinfo-sales">
+            <div class="dayinfo-sales__header">
+                <h3>Verkoopmix live</h3>
+                <span class="dayinfo-sales__total">Totaal ${mutationTotals.total || 0} stuks</span>
             </div>
+            ${topProducts}
         </section>
     `;
 
-    panel.querySelector('#gotoDagomzetBtn')?.addEventListener('click', () => {
-        navigationActionHandler('dagomzet');
+    const actionMap = {
+        quickSale: () => openQuickSaleModal(),
+        omzet: () => navigationActionHandler('dagomzet'),
+        voorraad: () => navigationActionHandler('voorraad'),
+        planner: () => navigationActionHandler('reis')
+    };
+
+    panel.querySelectorAll('[data-day-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const type = button.dataset.dayAction;
+            const handler = actionMap[type];
+            if (typeof handler === 'function') {
+                handler();
+            }
+        });
     });
+}
+
+function buildDayinfoCategoryChips(categories = {}) {
+    const order = [
+        { key: 'BG', label: 'Boerenkaas' },
+        { key: 'ROOK', label: 'Rook' },
+        { key: 'GEIT', label: 'Geit' }
+    ];
+    return order
+        .map(({ key, label }) => {
+            const value = Number(categories?.[key] || 0);
+            const safeValue = Number.isFinite(value) ? value : 0;
+            return `
+                <span class="dayinfo-chip" data-type="${key}">
+                    <strong>${safeValue}</strong>
+                    <span>${label}</span>
+                </span>
+            `;
+        })
+        .join('');
+}
+
+function buildDayinfoTopProducts(products = {}) {
+    const catalog = getCheeseProductCatalog();
+    const entries = Object.entries(products || {})
+        .map(([key, qty]) => ({ key, qty: Number(qty) || 0 }))
+        .filter((entry) => entry.qty > 0)
+        .map((entry) => {
+            const product = resolveCheeseProduct(catalog, entry.key) || {};
+            const name = product.naam || product.name || entry.key;
+            const type = normalizeCheeseType(product.type) || inferCheeseTypeFromName(name) || '';
+            return { ...entry, label: name, type };
+        })
+        .sort((a, b) => b.qty - a.qty)
+        .slice(0, 5);
+
+    if (!entries.length) {
+        return '<p class="dayinfo-sales__empty muted">Nog geen snelle verkoop geregistreerd.</p>';
+    }
+
+    const listItems = entries
+        .map((entry) => {
+            const typeLabel = entry.type ? `<span class="dayinfo-mix__type">${entry.type}</span>` : '';
+            return `
+                <li class="dayinfo-mix__item">
+                    <span class="dayinfo-mix__label">${escapeHtml(entry.label)}${typeLabel}</span>
+                    <span class="dayinfo-mix__qty">${entry.qty}</span>
+                </li>
+            `;
+        })
+        .join('');
+
+    return `<ol class="dayinfo-mix-list">${listItems}</ol>`;
 }
 
 store.on('activeDay:changed', renderActiveDayPanel);
@@ -4226,13 +5247,26 @@ function injectCoreStylesOnce() {
             /* Topbar */
             .app-topbar {
                 position: sticky; top: 0; z-index: 50; display: flex; align-items: center; justify-content: space-between;
-                background: #2A9626; color: #fff; padding: .6rem .8rem; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+                background: linear-gradient(180deg, rgba(255,255,255,.96) 0%, rgba(245,247,244,.92) 100%);
+                color: #123f16; padding: .7rem 1rem; box-shadow: 0 10px 30px rgba(20,65,25,.12);
             }
-            .tb-left, .tb-right { display: flex; align-items: center; gap: .5rem; }
-            .tb-btn { background: rgba(255,255,255,.18); border: 1px solid rgba(255,255,255,.3); color: #fff; padding: .4rem .6rem; border-radius: .6rem; font-weight: 800; cursor: pointer; }
-            .tb-title { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-            .net { width: 12px; height: 12px; border-radius: 50%; }
-            .net.ok { background: #9AE66E; } .net.off { background: #FF7043; }
+            .tb-left { display: flex; align-items: center; gap: 1rem; min-width: 0; flex: 1; }
+            .tb-right { display: flex; align-items: center; gap: .75rem; }
+            .tb-event { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .75rem; border: none; background: rgba(255,255,255,.9); border-radius: 18px; padding: .65rem .9rem; box-shadow: inset 0 0 0 1px rgba(20,65,25,.12); cursor: pointer; font: inherit; color: #123f16; text-align: left; min-width: 0; }
+            .tb-event--empty { opacity: .8; cursor: default; }
+            .tb-event__icon { font-size: 1.3rem; }
+            .tb-event__content { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+            .tb-event__title { font-size: 1rem; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .tb-event__meta { font-size: .78rem; font-weight: 600; color: #4b5d4f; }
+            .tb-event__cta { font-size: .72rem; font-weight: 800; color: #1F6D1C; text-transform: uppercase; letter-spacing: .05em; }
+            .tb-context { display: flex; align-items: center; gap: .5rem; }
+            .tb-chip { display: flex; align-items: center; gap: .4rem; background: rgba(255,255,255,.92); border-radius: 999px; padding: .35rem .75rem; box-shadow: inset 0 0 0 1px rgba(20,65,25,.1); }
+            .tb-chip__icon { font-size: 1rem; }
+            .tb-chip__content { display: flex; flex-direction: column; line-height: 1.1; }
+            .tb-chip__title { font-weight: 700; font-size: .85rem; }
+            .tb-chip__meta { font-size: .7rem; color: #4b5d4f; font-weight: 600; }
+            .net { width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 4px rgba(42,150,38,.12); border: 2px solid #fff; }
+            .net.ok { background: #2A9626; } .net.off { background: #E74C3C; }
 
             /* Bottom navigation */
             .app-bottom-nav {
@@ -4268,6 +5302,8 @@ function injectCoreStylesOnce() {
                 transition: background .2s ease, color .2s ease;
             }
             .app-bottom-nav button .icon { font-size: 1.25rem; }
+            .app-bottom-nav button .badge { position: absolute; top: .35rem; right: .6rem; min-width: 1.2rem; padding: .1rem .35rem; border-radius: 999px; background: rgba(255,197,0,.92); color: #1a2f1e; font-size: .65rem; font-weight: 800; letter-spacing: .04em; box-shadow: 0 2px 6px rgba(0,0,0,.18); display: inline-flex; justify-content: center; align-items: center; }
+            .badge--hidden { display: none !important; }
             .app-bottom-nav button:active { background: rgba(42,150,38,.12); color: #1F6D1C; }
             .app-bottom-nav button.active { background: rgba(42,150,38,.18); color: #1F6D1C; }
             .app-bottom-nav button:disabled {
@@ -4330,7 +5366,39 @@ function injectCoreStylesOnce() {
             .dashboard-highlight-card__icon { font-size: 1.35rem; }
             .dashboard-highlight-card__value { font-weight: 900; font-size: 1.05rem; color: #143814; margin: 0; }
             .dashboard-highlight-card__meta { font-size: .8rem; font-weight: 700; color: #52635b; margin: 0; }
+            .dashboard-highlight-card--paper { background: rgba(255,197,0,.18); border: 1px solid rgba(255,197,0,.35); }
+            .dashboard-highlight-card--paper .dashboard-highlight-card__icon { font-size: 1.6rem; }
+            .paper-checklist-list { list-style: none; margin: .25rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; font-weight: 700; color: #35513a; }
+            .paper-checklist-list li { padding: .1rem 0; }
+            .dashboard-highlight-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+            .dashboard-highlight-actions .btn-secondary { border-radius: .8rem; font-weight: 800; }
             #salesMount { display: flex; flex-direction: column; gap: .8rem; }
+
+            /* Daginfo hero */
+            .dayinfo-hero { display: flex; flex-direction: column; gap: 1rem; background: linear-gradient(145deg, rgba(42,150,38,.18) 0%, rgba(255,197,0,.18) 100%); border: 1px solid rgba(20,65,25,.08); }
+            .dayinfo-hero__header { display: flex; flex-direction: column; gap: .6rem; }
+            @media (min-width: 720px) { .dayinfo-hero__header { flex-direction: row; justify-content: space-between; align-items: flex-start; } }
+            .dayinfo-hero__eyebrow { margin: 0; text-transform: uppercase; letter-spacing: .08em; font-size: .72rem; font-weight: 800; color: #315539; }
+            .dayinfo-hero__title { margin: 0; font-size: clamp(1.35rem, 5vw, 1.75rem); font-weight: 900; color: #123f16; }
+            .dayinfo-hero__meta { margin: 0; font-size: .88rem; font-weight: 600; color: #315539; }
+            .dayinfo-hero__badges { display: flex; flex-wrap: wrap; gap: .35rem; }
+            .dayinfo-badge { display: inline-flex; align-items: center; gap: .35rem; background: rgba(255,255,255,.85); border-radius: 999px; padding: .3rem .75rem; font-weight: 700; font-size: .78rem; box-shadow: inset 0 0 0 1px rgba(20,65,25,.12); }
+            .dayinfo-hero__chips { display: flex; gap: .5rem; flex-wrap: wrap; }
+            .dayinfo-chip { display: inline-flex; flex-direction: column; gap: .15rem; background: rgba(255,255,255,.9); border-radius: .9rem; padding: .5rem .75rem; box-shadow: inset 0 0 0 1px rgba(20,65,25,.08); min-width: 94px; }
+            .dayinfo-chip strong { font-size: 1.05rem; font-weight: 800; color: #123f16; }
+            .dayinfo-chip span { font-size: .72rem; font-weight: 600; color: #45614b; }
+            .dayinfo-hero__actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .5rem; }
+            .dayinfo-action { border: none; border-radius: .9rem; padding: .6rem .8rem; font-weight: 800; font-size: .9rem; display: inline-flex; justify-content: center; align-items: center; gap: .45rem; background: rgba(255,255,255,.92); box-shadow: inset 0 0 0 1px rgba(20,65,25,.08); cursor: pointer; }
+            .dayinfo-action:hover { box-shadow: inset 0 0 0 1px rgba(20,65,25,.18); }
+            .dayinfo-meta h3, .dayinfo-sales h3 { margin: 0 0 .75rem 0; font-size: 1.05rem; font-weight: 800; color: #123f16; }
+            .dayinfo-sales__header { display: flex; justify-content: space-between; align-items: center; gap: .6rem; margin-bottom: .75rem; }
+            .dayinfo-sales__total { font-size: .82rem; font-weight: 700; color: #45614b; }
+            .dayinfo-sales__empty { margin: .5rem 0 0; }
+            .dayinfo-mix-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+            .dayinfo-mix__item { display: flex; justify-content: space-between; align-items: center; gap: .75rem; padding: .55rem .75rem; border-radius: .9rem; background: rgba(255,255,255,.85); box-shadow: inset 0 0 0 1px rgba(20,65,25,.08); font-weight: 700; }
+            .dayinfo-mix__label { display: inline-flex; flex-direction: column; gap: .15rem; font-size: .88rem; color: #123f16; }
+            .dayinfo-mix__type { font-size: .7rem; font-weight: 600; color: #45614b; text-transform: uppercase; letter-spacing: .05em; }
+            .dayinfo-mix__qty { font-size: 1rem; font-weight: 800; color: #123f16; }
 
             @media (min-width: 1024px) {
                 .dashboard-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }

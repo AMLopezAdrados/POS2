@@ -48,7 +48,7 @@ export function openProductModal() {
     <h2>📦 Productbeheer</h2>
     <table style="width:100%; border-collapse: collapse;" id="productTable">
       <thead>
-        <tr><th>Naam</th><th>USD</th><th>EUR</th><th>Inkoop</th><th>Type</th><th></th></tr>
+        <tr><th>Naam</th><th>USD</th><th>EUR</th><th>Inkoop</th><th>Leverancier</th><th>Type</th><th></th></tr>
       </thead>
       <tbody id="productList">
         ${db.producten.map((p, i) => `
@@ -57,6 +57,7 @@ export function openProductModal() {
             <td><input type="number" step="0.01" value="${p.usd ?? ''}" style="width:70px"></td>
             <td><input type="number" step="0.01" value="${p.eur ?? ''}" style="width:70px"></td>
             <td><input type="number" step="0.01" value="${p.inkoop ?? ''}" style="width:70px"></td>
+            <td><input value="${p.leverancier ?? ''}" style="width:120px"></td>
             <td>
               <select style="width:100px">
                 <option value="BG" ${p.type === 'BG' ? 'selected' : ''}>BG</option>
@@ -99,11 +100,14 @@ export function openProductModal() {
     db.producten = Array.from(rows).map(row => {
       const inputs = row.querySelectorAll("input");
       const select = row.querySelector("select");
+      const leverancier = inputs[4]?.value?.trim?.() || "";
       return {
         naam: inputs[0]?.value.trim() || "",
         usd: parseFloat(inputs[1]?.value) || 0,
         eur: parseFloat(inputs[2]?.value) || 0,
         inkoop: parseFloat(inputs[3]?.value) || 0,
+        leverancier,
+        supplier: leverancier,
         type: select?.value || ""
       };
     });
@@ -144,6 +148,7 @@ function openAddProductModal() {
     <input id="addUSD" type="number" step="0.01" placeholder="USD" />
     <input id="addEUR" type="number" step="0.01" placeholder="EUR" />
     <input id="addInkoop" type="number" step="0.01" placeholder="Inkoop (EUR)" />
+    <input id="addLeverancier" placeholder="Leverancier" />
     <select id="addType">
       <option value="">-- Kies type --</option>
       <option value="BG">BG</option>
@@ -168,12 +173,13 @@ function openAddProductModal() {
     const usd = parseFloat(document.getElementById('addUSD').value);
     const eur = parseFloat(document.getElementById('addEUR').value);
     const inkoop = parseFloat(document.getElementById('addInkoop').value);
+    const leverancier = document.getElementById('addLeverancier').value.trim();
     const type = document.getElementById('addType').value.trim().toUpperCase();
     if (!naam || isNaN(usd) || isNaN(eur) || isNaN(inkoop) || !type) {
       alert('⚠️ Vul alle velden correct in.');
       return;
     }
-    db.producten.push({ naam, usd, eur, inkoop, type });
+    db.producten.push({ naam, usd, eur, inkoop, type, leverancier, supplier: leverancier });
     close();
   };
   document.getElementById('addCancel').onclick = close;
