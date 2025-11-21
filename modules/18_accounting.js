@@ -10,6 +10,8 @@ import {
 } from './17_inzichten.js';
 
 const DEFAULT_ACCOUNTS = ['Algemeen', 'Kassa', 'Pin', 'Bank', 'Overig'];
+const RECURRING_COSTS_KEY = 'ocpos.accounting.recurring.v1';
+const PROJECTION_SETTINGS_KEY = 'ocpos.accounting.projection.v1';
 
 const accountingState = {
   activeTab: 'overview',
@@ -18,7 +20,9 @@ const accountingState = {
     account: 'all',
     period: '30d'
   },
-  entries: []
+  entries: [],
+  recurringCosts: loadRecurringCosts(),
+  projection: loadProjectionSettings()
 };
 
 let activeRoot = null;
@@ -41,6 +45,69 @@ function getPendingQueueCount() {
   return Array.isArray(globalDb?.accounting?.pendingQueue)
     ? globalDb.accounting.pendingQueue.length
     : 0;
+}
+
+function loadRecurringCosts() {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(RECURRING_COSTS_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    if (Array.isArray(parsed)) return parsed;
+  } catch (err) {
+    console.debug?.('[Accounting] Kan vaste kosten niet laden', err);
+  }
+  return [];
+}
+
+function saveRecurringCosts(list) {
+  accountingState.recurringCosts = Array.isArray(list) ? list : [];
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(RECURRING_COSTS_KEY, JSON.stringify(accountingState.recurringCosts));
+  } catch (err) {
+    console.debug?.('[Accounting] Kan vaste kosten niet opslaan', err);
+  }
+}
+
+function loadProjectionSettings() {
+  if (typeof localStorage === 'undefined') {
+    return {
+      currentBalance: 0,
+      includeDebtors: true,
+      includeCreditors: true,
+      includeExpectedIncome: true,
+      includeFixedCosts: true
+    };
+  }
+  try {
+    const raw = localStorage.getItem(PROJECTION_SETTINGS_KEY);
+    const parsed = JSON.parse(raw || '{}');
+    return {
+      currentBalance: Number(parsed.currentBalance) || 0,
+      includeDebtors: parsed.includeDebtors !== false,
+      includeCreditors: parsed.includeCreditors !== false,
+      includeExpectedIncome: parsed.includeExpectedIncome !== false,
+      includeFixedCosts: parsed.includeFixedCosts !== false
+    };
+  } catch (err) {
+    console.debug?.('[Accounting] Kan projectie instellingen niet laden', err);
+    return {
+      currentBalance: 0,
+      includeDebtors: true,
+      includeCreditors: true,
+      includeExpectedIncome: true,
+      includeFixedCosts: true
+    };
+  }
+}
+
+function persistProjectionSettings() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(PROJECTION_SETTINGS_KEY, JSON.stringify(accountingState.projection));
+  } catch (err) {
+    console.debug?.('[Accounting] Kan projectie instellingen niet opslaan', err);
+  }
 }
 
 function describePendingQueue() {
@@ -901,6 +968,9 @@ function renderOverview(container, entries) {
     ? summary.map(renderSummaryCard).join('')
     : '<article class="acc-card acc-empty">Nog geen boekingen in deze selectie.</article>';
   const debCredHtml = renderDebCredOverview();
+  const payablesHtml = renderPayables();
+  const recurringHtml = renderRecurringCosts();
+  const projection = buildProjectionData(ledgerData);
 
   container.innerHTML = `
     <section class="acc-dashboard-head">
@@ -913,7 +983,14 @@ function renderOverview(container, entries) {
         <button type="button" class="acc-nav-btn" data-switch-tab="export">📤 Export</button>
       </div>
     </section>
+    ${renderIncomeSnapshot(ledgerData)}
     <section class="acc-kpi-grid" data-ledger-kpis></section>
+    <section class="acc-card acc-projection" aria-label="Cashflow projectie">
+      ${renderProjectionControls(projection)}
+      <div class="acc-projection-chart">
+        <canvas id="chartCashProjection" aria-label="Projectie" role="img"></canvas>
+      </div>
+    </section>
     <section class="acc-chart-grid">
       <article class="acc-card acc-chart">
         <header>Per maand</header>
@@ -931,6 +1008,10 @@ function renderOverview(container, entries) {
     <div class="acc-summary-grid">${summaryHtml}</div>
     ${activityHtml}
     ${debCredHtml}
+    <section class="acc-two-col">
+      ${payablesHtml}
+      ${recurringHtml}
+    </section>
   `;
 
   const kpiMount = container.querySelector('[data-ledger-kpis]');
@@ -939,8 +1020,11 @@ function renderOverview(container, entries) {
   }
   if (typeof Chart === 'function') {
     ledgerCharts = drawLedgerCharts(ledgerCharts, ledgerData);
+    ledgerCharts.projection = drawProjectionChart(ledgerCharts.projection, projection);
   }
   bindDashboardNavButtons(container);
+  bindProjectionControls(container);
+  bindRecurringCostForm(container);
 }
 
 function computeLedgerAggregatesForFilters() {
@@ -980,6 +1064,195 @@ function resolveScopeEvents(events, eventFilter) {
     const eventId = resolveLedgerId(event?.id || event?.uuid || event?.slug || event?.naam);
     return eventId === normalized;
   });
+}
+
+function renderIncomeSnapshot(ledgerData) {
+  const totalIncome = Number(ledgerData?.totals?.incomeEUR || 0);
+  const totalExpense = Number(ledgerData?.totals?.expenseEUR || 0);
+  const latestMonth = Array.isArray(ledgerData?.perMonth) && ledgerData.perMonth.length
+    ? ledgerData.perMonth[ledgerData.perMonth.length - 1]
+    : null;
+  const monthIncome = Number(latestMonth?.income || 0);
+  const monthExpense = Number(latestMonth?.expense || 0);
+  return `
+    <section class="acc-card acc-income">
+      <div class="acc-income-head">
+        <div>
+          <p class="muted">Beeld van inkomsten</p>
+          <h3>${formatCurrency(totalIncome, 'EUR')} totaal</h3>
+          <p class="muted">${formatCurrency(monthIncome, 'EUR')} deze periode • ${formatCurrency(monthExpense, 'EUR')} uitgegeven</p>
+        </div>
+        <div class="acc-income-balance ${totalIncome - totalExpense >= 0 ? 'pos' : 'neg'}">${formatCurrency(totalIncome - totalExpense, 'EUR')}</div>
+      </div>
+      <div class="acc-income-mini">
+        <div>
+          <span>Maand inkomsten</span>
+          <strong>${formatCurrency(monthIncome, 'EUR')}</strong>
+        </div>
+        <div>
+          <span>Maand uitgaven</span>
+          <strong>${formatCurrency(monthExpense, 'EUR')}</strong>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderProjectionControls(projection) {
+  const state = projection || accountingState.projection || {};
+  return `
+    <div class="acc-projection-controls">
+      <label class="acc-filter">
+        <span>Huidig saldo (EUR)</span>
+        <input type="number" step="0.01" inputmode="decimal" value="${state.currentBalance ?? ''}" data-projection-balance>
+      </label>
+      <div class="acc-toggle-row">
+        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeExpectedIncome" ${state.includeExpectedIncome !== false ? 'checked' : ''}> <span>Verwachte inkomsten</span></label>
+        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeDebtors" ${state.includeDebtors !== false ? 'checked' : ''}> <span>Open debiteuren</span></label>
+        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeCreditors" ${state.includeCreditors !== false ? 'checked' : ''}> <span>Open crediteuren</span></label>
+        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeFixedCosts" ${state.includeFixedCosts !== false ? 'checked' : ''}> <span>Vaste kosten</span></label>
+      </div>
+    </div>
+  `;
+}
+
+function buildProjectionData(ledgerData) {
+  const state = accountingState.projection || {};
+  const monthsAhead = 6;
+  const startBalance = Number(state.currentBalance) || 0;
+  const debtorTotal = state.includeDebtors === false ? 0 : sumOpenDebtors();
+  const creditorTotal = state.includeCreditors === false ? 0 : sumOpenCreditors();
+  const fixedCosts = state.includeFixedCosts === false ? new Array(monthsAhead).fill(0) : projectRecurringCosts(monthsAhead);
+  const expectedMonthlyIncome = state.includeExpectedIncome === false ? 0 : resolveAverageMonthlyIncome(ledgerData);
+  const labels = [];
+  const balances = [];
+  const inflows = [];
+  const outflows = [];
+  let running = startBalance;
+  for (let i = 0; i < monthsAhead; i += 1) {
+    const monthLabel = formatMonthLabel(addMonths(new Date(), i));
+    labels.push(monthLabel);
+    const inflow = expectedMonthlyIncome + (i === 0 ? debtorTotal : 0);
+    const outflow = fixedCosts[i] + (i === 0 ? creditorTotal : 0);
+    running += inflow - outflow;
+    inflows.push(Math.round(inflow * 100) / 100);
+    outflows.push(Math.round(outflow * 100) / 100);
+    balances.push(Math.round(running * 100) / 100);
+  }
+  return { labels, balances, inflows, outflows, startBalance };
+}
+
+function resolveAverageMonthlyIncome(ledgerData) {
+  const perMonth = Array.isArray(ledgerData?.perMonth) ? ledgerData.perMonth : [];
+  if (!perMonth.length) return 0;
+  const totalIncome = perMonth.reduce((sum, month) => sum + Number(month?.income || 0), 0);
+  return Math.round((totalIncome / perMonth.length) * 100) / 100;
+}
+
+function projectRecurringCosts(monthsAhead) {
+  const list = Array.isArray(accountingState.recurringCosts) ? accountingState.recurringCosts : [];
+  const buckets = new Array(monthsAhead).fill(0);
+  list.forEach((cost) => {
+    const amount = Number(cost?.amount) || 0;
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    const startDate = cost?.startDate ? new Date(cost.startDate) : new Date();
+    for (let i = 0; i < monthsAhead; i += 1) {
+      const targetDate = addMonths(new Date(), i);
+      if (!isDueInMonth(startDate, targetDate, cost?.frequency)) continue;
+      buckets[i] += amount;
+    }
+  });
+  return buckets.map((value) => Math.round(value * 100) / 100);
+}
+
+function isDueInMonth(startDate, targetDate, frequency = 'month') {
+  if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) return false;
+  const freq = (frequency || 'month').toString().toLowerCase();
+  const start = new Date(startDate.getFullYear(), startDate.getMonth(), 1).getTime();
+  const target = new Date(targetDate.getFullYear(), targetDate.getMonth(), 1).getTime();
+  if (target < start) return false;
+  const diffMonths = Math.round((target - start) / (1000 * 60 * 60 * 24 * 30.5));
+  if (freq === 'quarter') return diffMonths % 3 === 0;
+  if (freq === 'year') return diffMonths % 12 === 0;
+  return true;
+}
+
+function addMonths(date, count) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + count);
+  return d;
+}
+
+function formatMonthLabel(date) {
+  const formatter = new Intl.DateTimeFormat('nl-NL', { month: 'short', year: '2-digit' });
+  return formatter.format(date);
+}
+
+function drawProjectionChart(existingChart, projection) {
+  const canvas = document.getElementById('chartCashProjection');
+  if (!canvas || !projection) return existingChart;
+  try { existingChart?.destroy?.(); } catch (err) { console.debug?.('[Accounting] Chart cleanup', err); }
+  const context = canvas.getContext('2d');
+  if (!context) return existingChart;
+  return new Chart(context, {
+    type: 'line',
+    data: {
+      labels: projection.labels,
+      datasets: [{
+        label: 'Geprojecteerd saldo',
+        data: projection.balances,
+        borderColor: '#2A9626',
+        backgroundColor: 'rgba(42,150,38,0.12)',
+        tension: 0.25,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { beginAtZero: false }
+      }
+    }
+  });
+}
+
+function bindProjectionControls(root) {
+  if (!root) return;
+  const balanceInput = root.querySelector('[data-projection-balance]');
+  if (balanceInput) {
+    balanceInput.addEventListener('change', () => {
+      const value = Number(balanceInput.value);
+      accountingState.projection.currentBalance = Number.isFinite(value) ? value : 0;
+      persistProjectionSettings();
+      refreshAccountingView();
+    });
+  }
+  root.querySelectorAll('input[data-projection-toggle]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      const key = checkbox.getAttribute('data-projection-toggle');
+      if (!key) return;
+      accountingState.projection[key] = checkbox.checked;
+      persistProjectionSettings();
+      refreshAccountingView();
+    });
+  });
+}
+
+function sumOpenDebtors() {
+  const parties = mergePartyLists([], collectLedgerParties().debtors || []);
+  return parties.reduce((sum, party) => {
+    if ((resolvePartyCurrency(party) || 'EUR') !== 'EUR') return sum;
+    return sum + Math.max(0, Number(resolvePartyBalance(party)) || 0);
+  }, 0);
+}
+
+function sumOpenCreditors() {
+  const parties = mergePartyLists([], collectLedgerParties().creditors || []);
+  return parties.reduce((sum, party) => {
+    if ((resolvePartyCurrency(party) || 'EUR') !== 'EUR') return sum;
+    return sum + Math.max(0, Number(resolvePartyBalance(party)) || 0);
+  }, 0);
 }
 
 function resetLedgerCharts() {
@@ -1068,6 +1341,161 @@ function renderPartyRow(party, tone) {
       <td class="${amountClass}">${formatCurrency(Math.abs(balance), currency)}</td>
     </tr>
   `;
+}
+
+function renderPayables() {
+  const invoices = collectOpenPurchaseInvoices();
+  if (!invoices.length) {
+    return '<article class="acc-card acc-empty">Geen te betalen facturen.</article>';
+  }
+  const rows = invoices.map((invoice) => `
+    <tr>
+      <td>${escapeHtml(invoice.supplier || 'Crediteur')}</td>
+      <td>${escapeHtml(invoice.invoiceNumber || '—')}</td>
+      <td>${escapeHtml(invoice.date || '—')}</td>
+      <td>${escapeHtml(invoice.dueDate || '—')}</td>
+      <td>${formatCurrency(invoice.amount, invoice.currency || 'EUR')}</td>
+    </tr>
+  `).join('');
+  return `
+    <article class="acc-card acc-payables">
+      <header>Te betalen facturen</header>
+      <div class="acc-table-wrapper">
+        <table class="acc-payables-table">
+          <thead>
+            <tr>
+              <th>Leverancier</th>
+              <th>Factuur</th>
+              <th>Factuurdatum</th>
+              <th>Vervaldatum</th>
+              <th>Bedrag</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function collectOpenPurchaseInvoices() {
+  const entries = Array.isArray(store.state.db?.accounting?.entries)
+    ? store.state.db.accounting.entries
+    : [];
+  return entries
+    .filter((entry) => entry?.meta?.source === 'purchase-invoice' && (entry.meta.status || '').toUpperCase() !== 'PAID')
+    .map((entry) => ({
+      supplier: entry.meta?.creditorName || entry.note || 'Crediteur',
+      invoiceNumber: entry.meta?.invoiceNumber || entry.reference || '',
+      amount: Number(entry.amount) || 0,
+      currency: entry.currency || 'EUR',
+      date: formatDateYMD(entry.date || entry.createdAt),
+      dueDate: entry.meta?.dueDate || ''
+    }))
+    .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+}
+
+function renderRecurringCosts() {
+  const list = Array.isArray(accountingState.recurringCosts) ? accountingState.recurringCosts : [];
+  const items = list.length
+    ? list.map((item) => `
+      <li>
+        <div>
+          <strong>${escapeHtml(item.label || 'Vaste kost')}</strong>
+          <span class="muted">${describeFrequency(item.frequency)} • vanaf ${escapeHtml(item.startDate || '-')}</span>
+        </div>
+        <div class="acc-recurring-actions">
+          <span class="amount">${formatCurrency(item.amount, item.currency || 'EUR')}</span>
+          <button type="button" data-remove-cost="${escapeHtml(item.id)}" aria-label="Verwijder vaste kost">✕</button>
+        </div>
+      </li>
+    `).join('')
+    : '<li class="muted">Nog geen vaste kosten ingevoerd.</li>';
+  const defaultDate = formatDateYMD(addMonths(new Date(), 0)) || '';
+  return `
+    <article class="acc-card acc-recurring">
+      <header>Vaste kosten</header>
+      <form data-fixed-cost-form class="acc-recurring-form">
+        <label class="acc-field">
+          <span>Omschrijving</span>
+          <input type="text" name="label" maxlength="80" placeholder="Bijv. Stallingskosten" required>
+        </label>
+        <div class="acc-recurring-grid">
+          <label class="acc-field">
+            <span>Bedrag</span>
+            <input type="number" name="amount" step="0.01" min="0" required>
+          </label>
+          <label class="acc-field">
+            <span>Valuta</span>
+            <select name="currency">
+              <option value="EUR">EUR</option>
+              <option value="USD">USD</option>
+            </select>
+          </label>
+          <label class="acc-field">
+            <span>Frequentie</span>
+            <select name="frequency">
+              <option value="month">Maandelijks</option>
+              <option value="quarter">Per kwartaal</option>
+              <option value="year">Per jaar</option>
+            </select>
+          </label>
+          <label class="acc-field">
+            <span>Startdatum</span>
+            <input type="date" name="startDate" value="${defaultDate}">
+          </label>
+        </div>
+        <button type="submit" class="acc-submit groen">Vaste kost opslaan</button>
+      </form>
+      <ul class="acc-recurring-list" data-fixed-cost-list>${items}</ul>
+    </article>
+  `;
+}
+
+function describeFrequency(value) {
+  const freq = (value || 'month').toString().toLowerCase();
+  if (freq === 'quarter') return 'Per kwartaal';
+  if (freq === 'year') return 'Per jaar';
+  return 'Maandelijks';
+}
+
+function bindRecurringCostForm(root) {
+  if (!root) return;
+  const form = root.querySelector('[data-fixed-cost-form]');
+  if (form) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const formData = new FormData(form);
+      const amount = Number.parseFloat(String(formData.get('amount')).replace(',', '.'));
+      if (!Number.isFinite(amount) || amount <= 0) return;
+      const label = (formData.get('label') || 'Vaste kost').toString().trim();
+      const currency = (formData.get('currency') || 'EUR').toString().toUpperCase();
+      const frequency = (formData.get('frequency') || 'month').toString();
+      const startDate = (formData.get('startDate') || '').toString();
+      const entry = {
+        id: `fixed-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 6)}`,
+        label,
+        amount: Math.round(amount * 100) / 100,
+        currency,
+        frequency,
+        startDate
+      };
+      const next = [...(accountingState.recurringCosts || []), entry];
+      saveRecurringCosts(next);
+      refreshAccountingView();
+    });
+  }
+  root.querySelectorAll('[data-remove-cost]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.getAttribute('data-remove-cost');
+      if (!id) return;
+      const filtered = (accountingState.recurringCosts || []).filter((item) => item.id !== id);
+      saveRecurringCosts(filtered);
+      refreshAccountingView();
+    });
+  });
 }
 
 function collectLedgerParties() {

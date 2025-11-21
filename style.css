@@ -587,6 +587,12 @@ button:disabled{
   gap: 1rem;
 }
 
+.acc-two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+
 .acc-card {
   background: #fff;
   border-radius: 18px;
@@ -692,6 +698,36 @@ button:disabled{
   color: var(--green-700);
 }
 
+.acc-income {
+  gap: .5rem;
+}
+
+.acc-income-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.acc-income-head h3 { margin: 0; }
+
+.acc-income-balance {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--green-700);
+}
+
+.acc-income-balance.neg { color: var(--red); }
+
+.acc-income-mini {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: .75rem;
+}
+
+.acc-income-mini span { color: rgba(24,57,29,.65); font-size: .9rem; }
+.acc-income-mini strong { font-size: 1.1rem; }
+
 .acc-activity-list {
   list-style: none;
   margin: 0;
@@ -720,6 +756,40 @@ button:disabled{
   flex: 1;
   text-align: right;
   color: rgba(24, 57, 29, .75);
+}
+
+.acc-projection {
+  gap: .75rem;
+}
+
+.acc-projection-controls {
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.acc-projection-controls input[type="number"] {
+  border: 1px solid rgba(24, 57, 29, .12);
+  border-radius: 10px;
+  padding: .55rem .65rem;
+  font-size: 1rem;
+}
+
+.acc-toggle-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.acc-toggle-row .acc-checkbox {
+  display: inline-flex;
+  gap: .35rem;
+  align-items: center;
+  font-size: .95rem;
+}
+
+.acc-projection-chart {
+  min-height: 240px;
 }
 
 .acc-activity-meta {
@@ -761,6 +831,69 @@ button:disabled{
 
 .acc-export {
   gap: .75rem;
+}
+
+.acc-payables-table,
+.acc-party-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .92rem;
+}
+
+.acc-payables-table th,
+.acc-payables-table td,
+.acc-party-table th,
+.acc-party-table td {
+  padding: .5rem .65rem;
+  border-bottom: 1px solid rgba(24,57,29,.08);
+  text-align: left;
+}
+
+.acc-recurring-form {
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+
+.acc-recurring-grid {
+  display: grid;
+  gap: .65rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.acc-recurring-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+}
+
+.acc-recurring-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: .75rem;
+  align-items: center;
+}
+
+.acc-recurring-actions {
+  display: inline-flex;
+  gap: .5rem;
+  align-items: center;
+}
+
+.acc-recurring-actions .amount {
+  font-weight: 700;
+}
+
+.acc-recurring-actions button {
+  border: none;
+  background: rgba(24,57,29,.08);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
 }
 
 .acc-export-actions {
