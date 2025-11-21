@@ -2,7 +2,7 @@
 
 import { store } from './store.js';
 import { formatCurrencyValue } from './4_ui.js';
-import { recordLedgerEntry, recordPurchaseInvoice, recordEventInvoiceLedgerEntry, processAccountingPendingQueue } from './3_data.js';
+import { recordLedgerEntry, recordPurchaseInvoice, recordEventInvoiceLedgerEntry, processAccountingPendingQueue, updateLedgerEntry } from './3_data.js';
 import {
   buildAccountingAggregates,
   renderAccountingKPIs as renderLedgerKpis,
@@ -76,7 +76,11 @@ function loadProjectionSettings() {
       includeDebtors: true,
       includeCreditors: true,
       includeExpectedIncome: true,
-      includeFixedCosts: true
+      includeFixedCosts: true,
+      includeFutureEvents: true,
+      includePlannedInvoices: true,
+      includeIncidentalCosts: true,
+      horizon: 6
     };
   }
   try {
@@ -87,7 +91,11 @@ function loadProjectionSettings() {
       includeDebtors: parsed.includeDebtors !== false,
       includeCreditors: parsed.includeCreditors !== false,
       includeExpectedIncome: parsed.includeExpectedIncome !== false,
-      includeFixedCosts: parsed.includeFixedCosts !== false
+      includeFixedCosts: parsed.includeFixedCosts !== false,
+      includeFutureEvents: parsed.includeFutureEvents !== false,
+      includePlannedInvoices: parsed.includePlannedInvoices !== false,
+      includeIncidentalCosts: parsed.includeIncidentalCosts !== false,
+      horizon: Number.isFinite(Number(parsed.horizon)) ? Math.min(Math.max(Number(parsed.horizon), 3), 12) : 6
     };
   } catch (err) {
     console.debug?.('[Accounting] Kan projectie instellingen niet laden', err);
@@ -96,7 +104,11 @@ function loadProjectionSettings() {
       includeDebtors: true,
       includeCreditors: true,
       includeExpectedIncome: true,
-      includeFixedCosts: true
+      includeFixedCosts: true,
+      includeFutureEvents: true,
+      includePlannedInvoices: true,
+      includeIncidentalCosts: true,
+      horizon: 6
     };
   }
 }
@@ -174,143 +186,145 @@ export function renderAccountingPage(target) {
 function buildBaseMarkup() {
   return `
     <div class="accounting-shell">
-      <div class="acc-header">
-        <div class="acc-tabs" role="tablist" aria-label="Accounting secties">
-          <button type="button" class="acc-tab" data-tab="overview" role="tab" aria-selected="false">Overzicht</button>
-          <button type="button" class="acc-tab" data-tab="journal" role="tab" aria-selected="false">Dagboek</button>
-          <button type="button" class="acc-tab" data-tab="export" role="tab" aria-selected="false">Export</button>
+      <section class="acc-hero">
+        <div class="acc-hero-text">
+          <p class="eyebrow">Boekhouding</p>
+          <h2>Saldo & cashflow</h2>
+          <p class="muted">Eén scherm met snelle invoer en directe projectie.</p>
+          <div class="acc-filter-chips" role="group" aria-label="Boekhouding filters">
+            <label class="acc-chip">
+              <span>Event</span>
+              <select name="acc-filter-event"></select>
+            </label>
+            <label class="acc-chip">
+              <span>Account</span>
+              <select name="acc-filter-account"></select>
+            </label>
+            <label class="acc-chip">
+              <span>Periode</span>
+              <select name="acc-filter-period">
+                <option value="today">Vandaag</option>
+                <option value="7d">Laatste 7 dagen</option>
+                <option value="30d">Laatste 30 dagen</option>
+                <option value="year">Dit jaar</option>
+                <option value="all">Alle transacties</option>
+              </select>
+            </label>
+          </div>
+          <div class="acc-context" data-context-label></div>
         </div>
-      </div>
-      <div class="acc-filters" role="group" aria-label="Accounting filters">
-        <label class="acc-filter">
-          <span>Event</span>
-          <select name="acc-filter-event"></select>
-        </label>
-        <label class="acc-filter">
-          <span>Account</span>
-          <select name="acc-filter-account"></select>
-        </label>
-        <label class="acc-filter">
-          <span>Periode</span>
-          <select name="acc-filter-period">
-            <option value="today">Vandaag</option>
-            <option value="7d">Laatste 7 dagen</option>
-            <option value="30d">Laatste 30 dagen</option>
-            <option value="year">Dit jaar</option>
-            <option value="all">Alle transacties</option>
-          </select>
-        </label>
-      </div>
-      <div class="acc-context" data-context-label></div>
-      <div class="acc-status" data-status role="status" aria-live="polite"></div>
-      <section class="acc-quick-entry" aria-label="Snelle invoer">
-        <form class="acc-card acc-quick-form" data-type="income">
-          <h3>Snelle inkomsten</h3>
-          <div class="acc-field">
-            <label>Bedrag</label>
-            <div class="acc-money-field">
-              <input type="number" name="amount" min="0" step="0.01" inputmode="decimal" required placeholder="0,00">
-              <select name="currency">
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
-              </select>
+        <div class="acc-status" data-status role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="acc-quick-stack" aria-label="Snelle invoer">
+        <form class="acc-card acc-quick-simple" data-simple-entry>
+          <header class="acc-quick-head">
+            <div class="acc-type-toggle" role="group" aria-label="Soort boeking">
+              <button type="button" class="chip is-active" data-entry-type="income">+ Inkomst</button>
+              <button type="button" class="chip" data-entry-type="expense">- Uitgave</button>
             </div>
-          </div>
-          <div class="acc-field">
-            <label>Categorie</label>
-            <select name="categoryId" data-quick-category>
-              <option value="">Kies categorie</option>
-            </select>
-          </div>
-          <div class="acc-field">
-            <label>Omschrijving</label>
-            <input type="text" name="note" maxlength="120" placeholder="Omschrijving (optioneel)">
-          </div>
-          <button type="submit" class="acc-submit groen">Boeking toevoegen</button>
-        </form>
-        <form class="acc-card acc-quick-form" data-type="expense">
-          <h3>Snelle uitgaven</h3>
-          <div class="acc-field">
-            <label>Bedrag</label>
-            <div class="acc-money-field">
-              <input type="number" name="amount" min="0" step="0.01" inputmode="decimal" required placeholder="0,00">
-              <select name="currency">
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
+            <p class="muted">Alleen bedrag, categorie en notitie. Snel klaar.</p>
+          </header>
+          <div class="acc-field-grid">
+            <label class="acc-field">
+              <span>Bedrag</span>
+              <div class="acc-money-field">
+                <input type="number" name="amount" min="0" step="0.01" inputmode="decimal" required placeholder="0,00">
+                <select name="currency">
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                </select>
+              </div>
+            </label>
+            <label class="acc-field">
+              <span>Categorie</span>
+              <select name="categoryId" data-quick-category>
+                <option value="">Kies categorie</option>
               </select>
-            </div>
+            </label>
+            <label class="acc-field">
+              <span>Notitie</span>
+              <input type="text" name="note" maxlength="140" placeholder="Omschrijving (optioneel)">
+            </label>
+            <label class="acc-field" data-expense-only>
+              <span>Crediteur</span>
+              <input type="text" name="party" maxlength="80" placeholder="Leverancier (optioneel)">
+            </label>
           </div>
-          <div class="acc-field">
-            <label>Categorie</label>
-            <select name="categoryId" data-quick-category>
-              <option value="">Kies categorie</option>
-            </select>
-          </div>
-          <div class="acc-field">
-            <label>Crediteur</label>
-            <input type="text" name="party" maxlength="80" placeholder="Leverancier (optioneel)">
-          </div>
-          <div class="acc-field acc-field-inline">
-            <label class="acc-checkbox">
+          <div class="acc-quick-footer">
+            <label class="acc-checkbox" data-expense-only>
               <input type="checkbox" name="isCreditor">
               <span>Opslaan als openstaande crediteur</span>
             </label>
+            <button type="submit" class="acc-submit groen">Boeking opslaan</button>
           </div>
-          <div class="acc-field">
-            <label>Omschrijving</label>
-            <input type="text" name="note" maxlength="120" placeholder="Omschrijving (optioneel)">
-          </div>
-          <button type="submit" class="acc-submit rood">Uitgave registreren</button>
         </form>
-        <form class="acc-card acc-quick-form" data-type="invoice">
-          <h3>Inkoopfactuur</h3>
-          <div class="acc-field">
-            <label>Crediteur</label>
-            <input type="text" name="supplier" maxlength="80" required placeholder="Leverancier">
-          </div>
-          <div class="acc-field">
-            <label>Factuurnummer</label>
-            <input type="text" name="invoiceNumber" maxlength="40" placeholder="Factuurnummer (optioneel)">
-          </div>
-          <div class="acc-field">
-            <label>Bedrag</label>
-            <div class="acc-money-field">
-              <input type="number" name="amount" min="0" step="0.01" inputmode="decimal" required placeholder="0,00">
-              <select name="currency">
-                <option value="EUR">EUR</option>
-                <option value="USD">USD</option>
-              </select>
+
+        <article class="acc-card acc-inline-panel">
+          <header>
+            <div>
+              <p class="eyebrow">Extra</p>
+              <h3>Facturen & vaste kosten</h3>
+              <p class="muted">Registreer een inkoopfactuur of beheer terugkerende kosten.</p>
             </div>
-          </div>
-          <div class="acc-field">
-            <label>Categorie</label>
-            <select name="categoryId" data-quick-category>
-              <option value="">Kies categorie</option>
-            </select>
-          </div>
-          <div class="acc-field">
-            <label>Event</label>
-            <select name="eventId" data-invoice-event>
-              <option value="">Geen specifiek event</option>
-            </select>
-          </div>
-          <div class="acc-field">
-            <label>Vervaldatum</label>
-            <input type="date" name="dueDate">
-          </div>
-          <div class="acc-field">
-            <label>Status</label>
-            <select name="status">
-              <option value="OPEN">Openstaand</option>
-              <option value="PAID">Betaald</option>
-            </select>
-          </div>
-          <div class="acc-field">
-            <label>Omschrijving</label>
-            <input type="text" name="note" maxlength="160" placeholder="Omschrijving (optioneel)">
-          </div>
-          <button type="submit" class="acc-submit blauw">Factuur opslaan</button>
-        </form>
+            <div class="acc-inline-actions">
+              <button type="button" class="chip" data-toggle-invoice>+ Inkoopfactuur</button>
+              <a href="#" class="chip ghost" data-scroll-to-fixed>Vaste kosten</a>
+            </div>
+          </header>
+          <form class="acc-mini-form" data-invoice-form hidden>
+            <div class="acc-field-grid">
+              <label class="acc-field">
+                <span>Crediteur</span>
+                <input type="text" name="supplier" maxlength="80" required placeholder="Leverancier">
+              </label>
+              <label class="acc-field">
+                <span>Factuurnummer</span>
+                <input type="text" name="invoiceNumber" maxlength="40" placeholder="Optioneel">
+              </label>
+              <label class="acc-field">
+                <span>Bedrag</span>
+                <div class="acc-money-field">
+                  <input type="number" name="amount" min="0" step="0.01" inputmode="decimal" required placeholder="0,00">
+                  <select name="currency">
+                    <option value="EUR">EUR</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </div>
+              </label>
+              <label class="acc-field">
+                <span>Categorie</span>
+                <select name="categoryId" data-quick-category>
+                  <option value="">Kies categorie</option>
+                </select>
+              </label>
+              <label class="acc-field">
+                <span>Event</span>
+                <select name="eventId" data-invoice-event>
+                  <option value="">Geen specifiek event</option>
+                </select>
+              </label>
+              <label class="acc-field">
+                <span>Vervaldatum</span>
+                <input type="date" name="dueDate">
+              </label>
+              <label class="acc-field">
+                <span>Status</span>
+                <select name="status">
+                  <option value="OPEN">Openstaand</option>
+                  <option value="PAID">Betaald</option>
+                </select>
+              </label>
+              <label class="acc-field">
+                <span>Notitie</span>
+                <input type="text" name="note" maxlength="160" placeholder="Omschrijving (optioneel)">
+              </label>
+            </div>
+            <div class="acc-quick-footer">
+              <button type="submit" class="acc-submit blauw">Factuur opslaan</button>
+            </div>
+          </form>
+        </article>
       </section>
       <section class="acc-content" data-content></section>
     </div>
@@ -536,7 +550,7 @@ function bindTabNavigation(root) {
 }
 
 function bindFilterControls(root) {
-  root.querySelectorAll('.acc-filter select').forEach((select) => {
+  root.querySelectorAll('select[name="acc-filter-event"], select[name="acc-filter-account"], select[name="acc-filter-period"]').forEach((select) => {
     select.addEventListener('change', () => {
       const name = select.getAttribute('name');
       if (!name) return;
@@ -549,96 +563,83 @@ function bindFilterControls(root) {
 }
 
 function bindQuickEntryForms(root) {
-  root.querySelectorAll('.acc-quick-form').forEach((form) => {
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (form.dataset.busy === 'true') return;
+  const simpleForm = root.querySelector('[data-simple-entry]');
+  if (simpleForm) {
+    let activeType = 'income';
 
-      const formData = new FormData(form);
+    const updateMode = (mode) => {
+      activeType = mode === 'expense' ? 'expense' : 'income';
+      simpleForm.querySelectorAll('[data-entry-type]').forEach((button) => {
+        const isActive = button.getAttribute('data-entry-type') === activeType;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      });
+      simpleForm.querySelectorAll('[data-expense-only]').forEach((node) => {
+        node.style.display = activeType === 'expense' ? '' : 'none';
+      });
+    };
+
+    updateMode('income');
+
+    simpleForm.querySelectorAll('[data-entry-type]').forEach((button) => {
+      button.addEventListener('click', () => {
+        updateMode(button.getAttribute('data-entry-type'));
+      });
+    });
+
+    simpleForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (simpleForm.dataset.busy === 'true') return;
+
+      const formData = new FormData(simpleForm);
       const amount = Number.parseFloat(String(formData.get('amount')).replace(',', '.'));
       if (!Number.isFinite(amount) || amount <= 0) {
-        form.querySelector('input[name="amount"]').focus();
+        simpleForm.querySelector('input[name="amount"]').focus();
         return;
       }
 
-      const submitButton = form.querySelector('button[type="submit"]');
-      const currencySelect = form.querySelector('select[name="currency"]');
-      const categorySelect = form.querySelector('select[name="categoryId"]');
+      const currencySelect = simpleForm.querySelector('select[name="currency"]');
+      const categorySelect = simpleForm.querySelector('select[name="categoryId"]');
+      const submitButton = simpleForm.querySelector('button[type="submit"]');
 
       const currency = (formData.get('currency') || 'EUR').toString().toUpperCase();
       const note = (formData.get('note') || '').toString().trim();
       const categoryId = (formData.get('categoryId') || '').toString().trim();
-      const type = form.dataset.type === 'expense'
-        ? 'expense'
-        : form.dataset.type === 'invoice'
-          ? 'invoice'
-          : 'income';
 
-      form.dataset.busy = 'true';
+      const metaOverrides = {};
+      let accountIdOverride;
+      if (activeType === 'expense') {
+        const party = (formData.get('party') || '').toString().trim();
+        const isCreditor = formData.get('isCreditor') === 'on';
+        if (party) metaOverrides.creditorName = party;
+        if (isCreditor) {
+          metaOverrides.creditorStatus = 'OPEN';
+          metaOverrides.bookedAsCreditor = true;
+          accountIdOverride = 'acct-purchase-creditor-eur';
+        }
+      }
+
+      simpleForm.dataset.busy = 'true';
       submitButton?.setAttribute('disabled', 'disabled');
 
       try {
-        if (type === 'invoice') {
-          const supplier = (formData.get('supplier') || '').toString().trim();
-          if (!supplier) {
-            form.querySelector('input[name="supplier"]').focus();
-            throw new Error('Crediteur is verplicht.');
-          }
-          const invoiceNumber = (formData.get('invoiceNumber') || '').toString().trim();
-          const eventId = (formData.get('eventId') || '').toString().trim();
-          const dueDate = (formData.get('dueDate') || '').toString().trim();
-          const statusValue = (formData.get('status') || 'OPEN').toString().toUpperCase();
-          await recordPurchaseInvoice({
-            amount,
-            currency,
-            creditor: supplier,
-            supplier,
-            invoiceNumber,
-            eventId: eventId || null,
-            dueDate: dueDate || null,
-            note,
-            status: statusValue,
-            categoryId: categoryId || null,
-            createdFrom: 'quick-entry-invoice',
-            filters: { ...accountingState.filters }
-          });
-          setStatusMessage('Inkoopfactuur opgeslagen.', 'success');
-          form.reset();
-          if (currencySelect) currencySelect.value = currency;
-          if (categorySelect) {
-            const fallback = categoryId || getDefaultCategoryId('expense');
-            if (fallback) categorySelect.value = fallback;
-          }
-        } else {
-          const metaOverrides = {};
-          let accountIdOverride;
-          if (type === 'expense') {
-            const party = (formData.get('party') || '').toString().trim();
-            const isCreditor = formData.get('isCreditor') === 'on';
-            if (party) metaOverrides.creditorName = party;
-            if (isCreditor) {
-              metaOverrides.creditorStatus = 'OPEN';
-              metaOverrides.bookedAsCreditor = true;
-              accountIdOverride = 'acct-purchase-creditor-eur';
-            }
-          }
-          const payload = buildQuickEntryPayload({
-            amount,
-            currency,
-            note,
-            categoryId,
-            type,
-            metaOverrides,
-            accountIdOverride
-          });
-          await recordLedgerEntry(payload);
-          setStatusMessage('Boeking opgeslagen in het grootboek.', 'success');
-          form.reset();
-          if (currencySelect) currencySelect.value = currency;
-          if (categorySelect) {
-            const resolvedCategory = categoryId || getDefaultCategoryId(type);
-            if (resolvedCategory) categorySelect.value = resolvedCategory;
-          }
+        const payload = buildQuickEntryPayload({
+          amount,
+          currency,
+          note,
+          categoryId,
+          type: activeType,
+          metaOverrides,
+          accountIdOverride
+        });
+        await recordLedgerEntry(payload);
+        setStatusMessage('Boeking opgeslagen in het grootboek.', 'success');
+        simpleForm.reset();
+        updateMode(activeType);
+        if (currencySelect) currencySelect.value = currency;
+        if (categorySelect) {
+          const resolvedCategory = categoryId || getDefaultCategoryId(activeType);
+          if (resolvedCategory) categorySelect.value = resolvedCategory;
         }
       } catch (err) {
         console.error('[Accounting] Quick entry opslaan mislukt:', err);
@@ -646,11 +647,99 @@ function bindQuickEntryForms(root) {
         setStatusMessage(`Opslaan mislukt: ${message}`, 'error');
         window.alert?.(`Boeking opslaan mislukt: ${message}`);
       } finally {
-        form.dataset.busy = 'false';
+        simpleForm.dataset.busy = 'false';
         submitButton?.removeAttribute('disabled');
       }
     });
-  });
+  }
+
+  const invoiceForm = root.querySelector('[data-invoice-form]');
+  if (invoiceForm) {
+    invoiceForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (invoiceForm.dataset.busy === 'true') return;
+
+      const formData = new FormData(invoiceForm);
+      const amount = Number.parseFloat(String(formData.get('amount')).replace(',', '.'));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        invoiceForm.querySelector('input[name="amount"]').focus();
+        return;
+      }
+
+      const submitButton = invoiceForm.querySelector('button[type="submit"]');
+      const currencySelect = invoiceForm.querySelector('select[name="currency"]');
+      const categorySelect = invoiceForm.querySelector('select[name="categoryId"]');
+
+      const currency = (formData.get('currency') || 'EUR').toString().toUpperCase();
+      const note = (formData.get('note') || '').toString().trim();
+      const categoryId = (formData.get('categoryId') || '').toString().trim();
+
+      const supplier = (formData.get('supplier') || '').toString().trim();
+      if (!supplier) {
+        invoiceForm.querySelector('input[name="supplier"]').focus();
+        return setStatusMessage('Crediteur is verplicht.', 'error');
+      }
+
+      invoiceForm.dataset.busy = 'true';
+      submitButton?.setAttribute('disabled', 'disabled');
+
+      try {
+        const invoiceNumber = (formData.get('invoiceNumber') || '').toString().trim();
+        const eventId = (formData.get('eventId') || '').toString().trim();
+        const dueDate = (formData.get('dueDate') || '').toString().trim();
+        const statusValue = (formData.get('status') || 'OPEN').toString().toUpperCase();
+        await recordPurchaseInvoice({
+          amount,
+          currency,
+          creditor: supplier,
+          supplier,
+          invoiceNumber,
+          eventId: eventId || null,
+          dueDate: dueDate || null,
+          note,
+          status: statusValue,
+          categoryId: categoryId || null,
+          createdFrom: 'quick-entry-invoice',
+          filters: { ...accountingState.filters }
+        });
+        setStatusMessage('Inkoopfactuur opgeslagen.', 'success');
+        invoiceForm.reset();
+        if (currencySelect) currencySelect.value = currency;
+        if (categorySelect) {
+          const fallback = categoryId || getDefaultCategoryId('expense');
+          if (fallback) categorySelect.value = fallback;
+        }
+      } catch (err) {
+        console.error('[Accounting] Quick entry invoice opslaan mislukt:', err);
+        const message = err?.message ? String(err.message) : 'Onbekende fout bij opslaan.';
+        setStatusMessage(`Opslaan mislukt: ${message}`, 'error');
+      } finally {
+        invoiceForm.dataset.busy = 'false';
+        submitButton?.removeAttribute('disabled');
+      }
+    });
+  }
+
+  const invoiceToggle = root.querySelector('[data-toggle-invoice]');
+  if (invoiceToggle && invoiceForm) {
+    invoiceToggle.addEventListener('click', () => {
+      const isHidden = invoiceForm.hasAttribute('hidden');
+      invoiceForm.toggleAttribute('hidden', !isHidden);
+      invoiceToggle.classList.toggle('is-active', isHidden);
+      if (!isHidden) return;
+      const supplierInput = invoiceForm.querySelector('input[name="supplier"]');
+      setTimeout(() => supplierInput?.focus(), 50);
+    });
+  }
+
+  const scrollToFixed = root.querySelector('[data-scroll-to-fixed]');
+  if (scrollToFixed) {
+    scrollToFixed.addEventListener('click', (event) => {
+      event.preventDefault();
+      const target = root.querySelector('[data-fixed-cost-form]');
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 }
 
 function populateQuickEntryCategories(root) {
@@ -661,7 +750,9 @@ function populateQuickEntryCategories(root) {
   const hasCategories = categories.length > 0;
   selects.forEach((select) => {
     const previousValue = select.value;
-    const formType = select.closest('.acc-quick-form')?.dataset.type === 'expense' ? 'expense' : 'income';
+    let formType = 'income';
+    if (select.closest('[data-invoice-form]')) formType = 'expense';
+    if (select.dataset.defaultType) formType = select.dataset.defaultType;
     const options = hasCategories
       ? ['<option value="">Kies categorie</option>', ...categories.map((category) => `\n        <option value="${escapeHtml(category.id)}">${escapeHtml(category.name)}</option>`)]
       : ['<option value="">Geen categorieën beschikbaar</option>'];
@@ -969,6 +1060,7 @@ function renderOverview(container, entries) {
     : '<article class="acc-card acc-empty">Nog geen boekingen in deze selectie.</article>';
   const debCredHtml = renderDebCredOverview();
   const payablesHtml = renderPayables();
+  const receivablesHtml = renderReceivables();
   const recurringHtml = renderRecurringCosts();
   const projection = buildProjectionData(ledgerData);
 
@@ -1010,8 +1102,9 @@ function renderOverview(container, entries) {
     ${debCredHtml}
     <section class="acc-two-col">
       ${payablesHtml}
-      ${recurringHtml}
+      ${receivablesHtml}
     </section>
+    ${recurringHtml}
   `;
 
   const kpiMount = container.querySelector('[data-ledger-kpis]');
@@ -1025,6 +1118,7 @@ function renderOverview(container, entries) {
   bindDashboardNavButtons(container);
   bindProjectionControls(container);
   bindRecurringCostForm(container);
+  bindInvoiceActionButtons(container);
 }
 
 function computeLedgerAggregatesForFilters() {
@@ -1099,31 +1193,90 @@ function renderIncomeSnapshot(ledgerData) {
 }
 
 function renderProjectionControls(projection) {
-  const state = projection || accountingState.projection || {};
+  const state = projection?.state || accountingState.projection || {};
+  const breakdown = projection?.breakdown || {};
+  const summaryItems = [
+    { label: 'Startsalo', value: state.currentBalance ?? 0 },
+    { label: '+ Debiteuren', value: breakdown.debtors || 0 },
+    { label: '- Crediteuren', value: breakdown.creditors ? -Math.abs(breakdown.creditors) : 0 },
+    { label: '+ Verwachte inkomsten', value: breakdown.expectedIncome || 0 },
+    { label: '- Kosten', value: (breakdown.fixedMonthly || 0) * -1 }
+  ];
   return `
     <div class="acc-projection-controls">
-      <label class="acc-filter">
-        <span>Huidig saldo (EUR)</span>
-        <input type="number" step="0.01" inputmode="decimal" value="${state.currentBalance ?? ''}" data-projection-balance>
-      </label>
-      <div class="acc-toggle-row">
-        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeExpectedIncome" ${state.includeExpectedIncome !== false ? 'checked' : ''}> <span>Verwachte inkomsten</span></label>
-        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeDebtors" ${state.includeDebtors !== false ? 'checked' : ''}> <span>Open debiteuren</span></label>
-        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeCreditors" ${state.includeCreditors !== false ? 'checked' : ''}> <span>Open crediteuren</span></label>
-        <label class="acc-checkbox"><input type="checkbox" data-projection-toggle="includeFixedCosts" ${state.includeFixedCosts !== false ? 'checked' : ''}> <span>Vaste kosten</span></label>
+      <div class="acc-projection-top">
+        <div>
+          <p class="eyebrow">Cashflow projectie</p>
+          <h3>Projecteer saldo</h3>
+          <div class="acc-projection-digest">
+            ${summaryItems.map(renderProjectionDigestItem).join('')}
+          </div>
+        </div>
+        <div class="acc-projection-inputs">
+          <label class="acc-inline-field">
+            <span>Startsaldo</span>
+            <input type="number" step="0.01" inputmode="decimal" value="${state.currentBalance ?? ''}" data-projection-balance>
+          </label>
+          <label class="acc-inline-field">
+            <span>Horizon</span>
+            <select data-projection-horizon>
+              <option value="3" ${state.horizon === 3 ? 'selected' : ''}>3 maanden</option>
+              <option value="6" ${!state.horizon || state.horizon === 6 ? 'selected' : ''}>6 maanden</option>
+              <option value="12" ${state.horizon === 12 ? 'selected' : ''}>12 maanden</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="acc-toggle-grid">
+        ${renderProjectionToggle(state, 'includeExpectedIncome', 'Verwachte inkomsten', breakdown.expectedIncome)}
+        ${renderProjectionToggle(state, 'includeDebtors', 'Open debiteuren', breakdown.debtors)}
+        ${renderProjectionToggle(state, 'includeCreditors', 'Open crediteuren', -(breakdown.creditors || 0))}
+        ${renderProjectionToggle(state, 'includeFixedCosts', 'Vaste kosten', -(breakdown.fixedMonthly || 0))}
+        ${renderProjectionToggle(state, 'includeFutureEvents', 'Toekomstige events', breakdown.futureEvents)}
+        ${renderProjectionToggle(state, 'includePlannedInvoices', 'Geplande facturen', -(breakdown.plannedInvoices || 0))}
+        ${renderProjectionToggle(state, 'includeIncidentalCosts', 'Incidentele kosten', -(breakdown.incidentalCosts || 0))}
       </div>
     </div>
   `;
 }
 
+function renderProjectionDigestItem(item) {
+  const tone = item.value >= 0 ? 'pos' : 'neg';
+  const sign = item.value >= 0 ? '+' : '-';
+  return `
+    <div class="acc-digest-item">
+      <span>${escapeHtml(item.label)}</span>
+      <strong class="${tone}">${sign} ${formatCurrency(Math.abs(item.value), 'EUR')}</strong>
+    </div>
+  `;
+}
+
+function renderProjectionToggle(state, key, label, amount = 0) {
+  const isActive = state?.[key] !== false;
+  const tone = amount >= 0 ? 'pos' : 'neg';
+  const badge = `${amount >= 0 ? '+' : '-'} ${formatCurrency(Math.abs(amount), 'EUR')}`;
+  return `
+    <button type="button" class="acc-toggle ${isActive ? 'is-active' : ''}" data-projection-toggle="${key}" aria-pressed="${isActive}">
+      <div>
+        <span class="acc-toggle-label">${escapeHtml(label)}</span>
+        <small class="muted">${isActive ? 'Mee in projectie' : 'Uit projectie'}</small>
+      </div>
+      <span class="badge ${tone}">${badge}</span>
+    </button>
+  `;
+}
+
 function buildProjectionData(ledgerData) {
   const state = accountingState.projection || {};
-  const monthsAhead = 6;
+  const monthsAhead = resolveHorizonMonths(state.horizon);
   const startBalance = Number(state.currentBalance) || 0;
   const debtorTotal = state.includeDebtors === false ? 0 : sumOpenDebtors();
   const creditorTotal = state.includeCreditors === false ? 0 : sumOpenCreditors();
   const fixedCosts = state.includeFixedCosts === false ? new Array(monthsAhead).fill(0) : projectRecurringCosts(monthsAhead);
   const expectedMonthlyIncome = state.includeExpectedIncome === false ? 0 : resolveAverageMonthlyIncome(ledgerData);
+  const futureEvents = state.includeFutureEvents === false ? new Array(monthsAhead).fill(0) : collectFutureEventProjections(monthsAhead);
+  const plannedInvoices = state.includePlannedInvoices === false ? new Array(monthsAhead).fill(0) : projectPurchaseInvoices(monthsAhead);
+  const incidentalCosts = state.includeIncidentalCosts === false ? new Array(monthsAhead).fill(0) : estimateIncidentalCosts(ledgerData, monthsAhead, fixedCosts);
   const labels = [];
   const balances = [];
   const inflows = [];
@@ -1132,14 +1285,23 @@ function buildProjectionData(ledgerData) {
   for (let i = 0; i < monthsAhead; i += 1) {
     const monthLabel = formatMonthLabel(addMonths(new Date(), i));
     labels.push(monthLabel);
-    const inflow = expectedMonthlyIncome + (i === 0 ? debtorTotal : 0);
-    const outflow = fixedCosts[i] + (i === 0 ? creditorTotal : 0);
+    const inflow = expectedMonthlyIncome + (i === 0 ? debtorTotal : 0) + (futureEvents[i] || 0);
+    const outflow = (fixedCosts[i] || 0) + (i === 0 ? creditorTotal : 0) + (plannedInvoices[i] || 0) + (incidentalCosts[i] || 0);
     running += inflow - outflow;
     inflows.push(Math.round(inflow * 100) / 100);
     outflows.push(Math.round(outflow * 100) / 100);
     balances.push(Math.round(running * 100) / 100);
   }
-  return { labels, balances, inflows, outflows, startBalance };
+  const breakdown = {
+    debtors: Math.round(debtorTotal * 100) / 100,
+    creditors: Math.round(creditorTotal * 100) / 100,
+    expectedIncome: Math.round(expectedMonthlyIncome * 100) / 100,
+    fixedMonthly: Math.round((fixedCosts.reduce((a, b) => a + b, 0) / (monthsAhead || 1)) * 100) / 100,
+    futureEvents: Math.round(futureEvents.reduce((a, b) => a + b, 0) * 100) / 100,
+    plannedInvoices: Math.round(plannedInvoices.reduce((a, b) => a + b, 0) * 100) / 100,
+    incidentalCosts: Math.round(incidentalCosts.reduce((a, b) => a + b, 0) * 100) / 100
+  };
+  return { labels, balances, inflows, outflows, startBalance, breakdown, state };
 }
 
 function resolveAverageMonthlyIncome(ledgerData) {
@@ -1147,6 +1309,70 @@ function resolveAverageMonthlyIncome(ledgerData) {
   if (!perMonth.length) return 0;
   const totalIncome = perMonth.reduce((sum, month) => sum + Number(month?.income || 0), 0);
   return Math.round((totalIncome / perMonth.length) * 100) / 100;
+}
+
+function estimateIncidentalCosts(ledgerData, monthsAhead, fixedCosts) {
+  const perMonth = Array.isArray(ledgerData?.perMonth) ? ledgerData.perMonth : [];
+  const recent = perMonth.slice(-3);
+  const avgExpense = recent.length
+    ? recent.reduce((sum, month) => sum + Number(month?.expense || 0), 0) / recent.length
+    : perMonth.reduce((sum, month) => sum + Number(month?.expense || 0), 0) / (perMonth.length || 1);
+  const avgFixed = (fixedCosts || []).reduce((sum, value) => sum + Number(value || 0), 0) / (monthsAhead || 1);
+  const variablePortion = Math.max(avgExpense - avgFixed, 0) * 0.5; // buffer voor incidentele kosten
+  const buckets = new Array(monthsAhead).fill(variablePortion);
+  return buckets.map((value) => Math.round((value || 0) * 100) / 100);
+}
+
+function resolveHorizonMonths(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 6;
+  return Math.min(Math.max(Math.round(num), 3), 12);
+}
+
+function collectFutureEventProjections(monthsAhead) {
+  const events = Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : [];
+  const buckets = new Array(monthsAhead).fill(0);
+  const now = new Date();
+  events.forEach((event) => {
+    const startRaw = event?.startdatum || event?.startDate || event?.datum || event?.date;
+    const startDate = startRaw ? new Date(startRaw) : null;
+    if (!startDate || Number.isNaN(startDate.getTime()) || startDate < now) return;
+    const monthsDiff = Math.max(0, Math.round((startDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30.5)));
+    if (monthsDiff >= monthsAhead) return;
+    const expectedIncome = resolveEventAmount(event, ['expectedRevenue', 'expectedIncome', 'verwachteOmzet', 'forecastRevenue', 'forecast_income', 'budget', 'budgetIncome']);
+    const expectedCosts = resolveEventAmount(event, ['expectedCosts', 'verwachteKosten', 'forecastCosts', 'budgetCosts']);
+    const net = Math.max(0, expectedIncome) - Math.max(0, expectedCosts);
+    if (net !== 0) {
+      buckets[monthsDiff] += net;
+    }
+  });
+  return buckets.map((value) => Math.round(value * 100) / 100);
+}
+
+function projectPurchaseInvoices(monthsAhead) {
+  const invoices = collectOpenPurchaseInvoices();
+  const buckets = new Array(monthsAhead).fill(0);
+  const now = new Date();
+  invoices.forEach((invoice) => {
+    if ((invoice.currency || 'EUR') !== 'EUR') return;
+    const dueDate = invoice.dueDate ? new Date(invoice.dueDate) : null;
+    const monthsDiff = dueDate && !Number.isNaN(dueDate.getTime())
+      ? Math.max(0, Math.round((dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24 * 30.5)))
+      : 0;
+    if (monthsDiff >= monthsAhead) return;
+    buckets[monthsDiff] += Math.max(0, Number(invoice.amount) || 0);
+  });
+  return buckets.map((value) => Math.round(value * 100) / 100);
+}
+
+function resolveEventAmount(event, keys) {
+  for (const key of keys) {
+    const value = event?.[key] ?? event?.forecast?.[key] ?? event?.budget?.[key];
+    if (value == null) continue;
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+  }
+  return 0;
 }
 
 function projectRecurringCosts(monthsAhead) {
@@ -1228,14 +1454,29 @@ function bindProjectionControls(root) {
       refreshAccountingView();
     });
   }
-  root.querySelectorAll('input[data-projection-toggle]').forEach((checkbox) => {
-    checkbox.addEventListener('change', () => {
-      const key = checkbox.getAttribute('data-projection-toggle');
-      if (!key) return;
-      accountingState.projection[key] = checkbox.checked;
+  const horizonSelect = root.querySelector('[data-projection-horizon]');
+  if (horizonSelect) {
+    horizonSelect.addEventListener('change', () => {
+      const value = resolveHorizonMonths(horizonSelect.value);
+      accountingState.projection.horizon = value;
       persistProjectionSettings();
       refreshAccountingView();
     });
+  }
+  root.querySelectorAll('[data-projection-toggle]').forEach((toggle) => {
+    const handler = () => {
+      const key = toggle.getAttribute('data-projection-toggle');
+      if (!key) return;
+      const current = accountingState.projection[key] !== false;
+      accountingState.projection[key] = toggle.tagName === 'BUTTON' ? !current : toggle.checked;
+      persistProjectionSettings();
+      refreshAccountingView();
+    };
+    if (toggle.tagName === 'BUTTON') {
+      toggle.addEventListener('click', handler);
+    } else {
+      toggle.addEventListener('change', handler);
+    }
   });
 }
 
@@ -1355,6 +1596,10 @@ function renderPayables() {
       <td>${escapeHtml(invoice.date || '—')}</td>
       <td>${escapeHtml(invoice.dueDate || '—')}</td>
       <td>${formatCurrency(invoice.amount, invoice.currency || 'EUR')}</td>
+      <td class="acc-status-cell">${renderInvoiceStatus(invoice.status)}</td>
+      <td class="acc-action-cell">
+        <button type="button" class="acc-table-action groen" data-mark-invoice-paid="${escapeHtml(invoice.id)}" data-invoice-type="purchase">Betaald</button>
+      </td>
     </tr>
   `).join('');
   return `
@@ -1369,6 +1614,8 @@ function renderPayables() {
               <th>Factuurdatum</th>
               <th>Vervaldatum</th>
               <th>Bedrag</th>
+              <th>Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -1391,10 +1638,124 @@ function collectOpenPurchaseInvoices() {
       invoiceNumber: entry.meta?.invoiceNumber || entry.reference || '',
       amount: Number(entry.amount) || 0,
       currency: entry.currency || 'EUR',
+      status: (entry.meta?.status || 'OPEN').toString().toUpperCase(),
       date: formatDateYMD(entry.date || entry.createdAt),
       dueDate: entry.meta?.dueDate || ''
     }))
     .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+}
+
+function renderReceivables() {
+  const invoices = collectOpenEventInvoices();
+  if (!invoices.length) {
+    return '<article class="acc-card acc-empty">Geen te ontvangen facturen.</article>';
+  }
+  const rows = invoices.map((invoice) => `
+    <tr>
+      <td>${escapeHtml(invoice.eventName || 'Event')}</td>
+      <td>${escapeHtml(invoice.invoiceNumber || '—')}</td>
+      <td>${escapeHtml(invoice.date || '—')}</td>
+      <td>${escapeHtml(invoice.dueDate || '—')}</td>
+      <td>${formatCurrency(invoice.amount, invoice.currency || 'EUR')}</td>
+      <td class="acc-status-cell">${renderInvoiceStatus(invoice.status)}</td>
+      <td class="acc-action-cell">
+        <button type="button" class="acc-table-action groen" data-mark-invoice-paid="${escapeHtml(invoice.id)}" data-invoice-type="event">Ontvangen</button>
+      </td>
+    </tr>
+  `).join('');
+  return `
+    <article class="acc-card acc-payables">
+      <header>Te ontvangen facturen</header>
+      <div class="acc-table-wrapper">
+        <table class="acc-payables-table">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Factuur</th>
+              <th>Factuurdatum</th>
+              <th>Vervaldatum</th>
+              <th>Bedrag</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function collectOpenEventInvoices() {
+  const entries = Array.isArray(store.state.db?.accounting?.entries)
+    ? store.state.db.accounting.entries
+    : [];
+  return entries
+    .filter((entry) => entry?.meta?.source === 'event-invoice' && (entry.meta.status || '').toUpperCase() !== 'PAID')
+    .map((entry) => ({
+      id: entry.id,
+      eventName: entry.meta?.eventName || describeEvent(entry.meta?.eventId || entry.eventId),
+      invoiceNumber: entry.meta?.invoiceNumber || entry.reference || '',
+      amount: Number(entry.amount) || 0,
+      currency: entry.currency || 'EUR',
+      status: (entry.meta?.status || 'OPEN').toString().toUpperCase(),
+      date: formatDateYMD(entry.date || entry.createdAt),
+      dueDate: entry.meta?.dueDate || ''
+    }))
+    .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+}
+
+function renderInvoiceStatus(status) {
+  const label = (status || 'OPEN').toString().toUpperCase() === 'PAID' ? 'Betaald' : 'Openstaand';
+  const tone = label === 'Betaald' ? 'is-success' : 'is-warning';
+  return `<span class="acc-status-chip ${tone}">${label}</span>`;
+}
+
+function bindInvoiceActionButtons(container) {
+  if (!container) return;
+  container.querySelectorAll('[data-mark-invoice-paid]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (button.dataset.busy === 'true') return;
+      const entryId = button.getAttribute('data-mark-invoice-paid');
+      const invoiceType = button.getAttribute('data-invoice-type') || 'purchase';
+      if (!entryId) return;
+      button.dataset.busy = 'true';
+      button.setAttribute('disabled', 'disabled');
+      try {
+        await markInvoiceAsPaid(entryId, invoiceType);
+        setStatusMessage('Factuur gemarkeerd als betaald.', 'success');
+      } catch (err) {
+        const message = err?.message || 'Kan factuur niet bijwerken';
+        setStatusMessage(message, 'error');
+      } finally {
+        delete button.dataset.busy;
+        button.removeAttribute('disabled');
+      }
+    });
+  });
+}
+
+async function markInvoiceAsPaid(entryId, invoiceType = 'purchase') {
+  const entry = findLedgerEntryById(entryId);
+  if (!entry) {
+    throw new Error('Factuur niet gevonden');
+  }
+  const source = entry.meta?.source;
+  if (invoiceType === 'purchase' && source !== 'purchase-invoice') {
+    throw new Error('Dit is geen inkoopfactuur');
+  }
+  if (invoiceType === 'event' && source !== 'event-invoice') {
+    throw new Error('Dit is geen debiteurenfactuur');
+  }
+  const meta = { ...entry.meta, status: 'PAID', paidAt: new Date().toISOString() };
+  await updateLedgerEntry(entryId, { meta });
+}
+
+function findLedgerEntryById(entryId) {
+  const entries = Array.isArray(store.state.db?.accounting?.entries)
+    ? store.state.db.accounting.entries
+    : [];
+  return entries.find((entry) => entry?.id === entryId) || null;
 }
 
 function renderRecurringCosts() {
