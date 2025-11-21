@@ -45,6 +45,7 @@ const modules = [
   '../modules/14_reisPlanning.js',
   '../modules/15_eventSchedule.js',
   '../modules/17_inzichten.js',
+  '../modules/18_accounting.js',
   '../modules/autoRefresh.js',
   '../modules/disableRefresh.js',
   '../modules/voorraad_utils.js'
