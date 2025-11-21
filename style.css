@@ -623,6 +623,32 @@ button:disabled{
   gap: 1rem;
 }
 
+.acc-party-summaries {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.acc-party-summary__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.acc-party-summary__total {
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--green-700);
+}
+
+.acc-party-summary.expense .acc-party-summary__total { color: var(--red); }
+
+.acc-party-summary__actions {
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+
 .acc-quick-head {
   display: flex;
   flex-direction: column;
@@ -922,6 +948,34 @@ button:disabled{
 
 .acc-projection-chart {
   min-height: 240px;
+  background: rgba(24,57,29,.02);
+  border-radius: 16px;
+  padding: .5rem;
+}
+
+.acc-projection-chart canvas,
+.acc-chart canvas {
+  width: 100%;
+  max-height: 320px;
+  height: 260px;
+}
+
+.acc-projection.is-compact .acc-projection-chart canvas { height: 180px; max-height: 220px; }
+
+.acc-projection-actions {
+  display: flex;
+  align-items: center;
+}
+
+.acc-party-modal .acc-party-table { font-size: .95rem; }
+.acc-party-modal .acc-party-modal__grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 720px) {
+  .acc-party-modal .acc-party-modal__grid { grid-template-columns: 1fr; }
 }
 
 .acc-activity-meta {

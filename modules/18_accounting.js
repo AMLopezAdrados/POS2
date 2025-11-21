@@ -12,6 +12,7 @@ import {
 const DEFAULT_ACCOUNTS = ['Algemeen', 'Kassa', 'Pin', 'Bank', 'Overig'];
 const RECURRING_COSTS_KEY = 'ocpos.accounting.recurring.v1';
 const PROJECTION_SETTINGS_KEY = 'ocpos.accounting.projection.v1';
+const PARTY_CACHE_KEY = 'ocpos.accounting.parties.v1';
 
 const accountingState = {
   activeTab: 'overview',
@@ -22,7 +23,8 @@ const accountingState = {
   },
   entries: [],
   recurringCosts: loadRecurringCosts(),
-  projection: loadProjectionSettings()
+  projection: loadProjectionSettings(),
+  partyCache: loadPartyCache()
 };
 
 let activeRoot = null;
@@ -119,6 +121,30 @@ function persistProjectionSettings() {
     localStorage.setItem(PROJECTION_SETTINGS_KEY, JSON.stringify(accountingState.projection));
   } catch (err) {
     console.debug?.('[Accounting] Kan projectie instellingen niet opslaan', err);
+  }
+}
+
+function loadPartyCache() {
+  if (typeof localStorage === 'undefined') return { debiteuren: [], crediteuren: [] };
+  try {
+    const raw = localStorage.getItem(PARTY_CACHE_KEY);
+    const parsed = JSON.parse(raw || '{}');
+    return {
+      debiteuren: Array.isArray(parsed.debiteuren) ? parsed.debiteuren : [],
+      crediteuren: Array.isArray(parsed.crediteuren) ? parsed.crediteuren : []
+    };
+  } catch (err) {
+    console.debug?.('[Accounting] Kan partij cache niet laden', err);
+    return { debiteuren: [], crediteuren: [] };
+  }
+}
+
+function persistPartyCache() {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(PARTY_CACHE_KEY, JSON.stringify(accountingState.partyCache || {}));
+  } catch (err) {
+    console.debug?.('[Accounting] Kan partij cache niet opslaan', err);
   }
 }
 
@@ -1058,7 +1084,7 @@ function renderOverview(container, entries) {
   const summaryHtml = summary.length
     ? summary.map(renderSummaryCard).join('')
     : '<article class="acc-card acc-empty">Nog geen boekingen in deze selectie.</article>';
-  const debCredHtml = renderDebCredOverview();
+  const partyCards = renderPartySummaryGrid();
   const payablesHtml = renderPayables();
   const receivablesHtml = renderReceivables();
   const recurringHtml = renderRecurringCosts();
@@ -1076,13 +1102,9 @@ function renderOverview(container, entries) {
       </div>
     </section>
     ${renderIncomeSnapshot(ledgerData)}
+    ${partyCards}
     <section class="acc-kpi-grid" data-ledger-kpis></section>
-    <section class="acc-card acc-projection" aria-label="Cashflow projectie">
-      ${renderProjectionControls(projection)}
-      <div class="acc-projection-chart">
-        <canvas id="chartCashProjection" aria-label="Projectie" role="img"></canvas>
-      </div>
-    </section>
+    ${renderProjectionSummary(projection)}
     <section class="acc-chart-grid">
       <article class="acc-card acc-chart">
         <header>Per maand</header>
@@ -1099,7 +1121,6 @@ function renderOverview(container, entries) {
     </section>
     <div class="acc-summary-grid">${summaryHtml}</div>
     ${activityHtml}
-    ${debCredHtml}
     <section class="acc-two-col">
       ${payablesHtml}
       ${receivablesHtml}
@@ -1113,12 +1134,45 @@ function renderOverview(container, entries) {
   }
   if (typeof Chart === 'function') {
     ledgerCharts = drawLedgerCharts(ledgerCharts, ledgerData);
+    ledgerCharts.projectionMini = drawProjectionChart(ledgerCharts.projectionMini, projection, 'chartCashProjectionMini');
     ledgerCharts.projection = drawProjectionChart(ledgerCharts.projection, projection);
   }
   bindDashboardNavButtons(container);
   bindProjectionControls(container);
+  bindProjectionModal(container, projection);
   bindRecurringCostForm(container);
   bindInvoiceActionButtons(container);
+  bindPartyCardActions(container);
+}
+
+function renderPartySummaryGrid() {
+  const { debtors, creditors } = collectAllParties();
+  const debtorTotal = debtors.reduce((sum, party) => sum + Math.max(0, resolvePartyBalance(party) || 0), 0);
+  const creditorTotal = creditors.reduce((sum, party) => sum + Math.max(0, resolvePartyBalance(party) || 0), 0);
+  return `
+    <section class="acc-party-summaries">
+      ${renderPartySummaryCard('Debiteuren', debtorTotal, debtors.length, 'debiteur')}
+      ${renderPartySummaryCard('Crediteuren', creditorTotal, creditors.length, 'crediteur')}
+    </section>
+  `;
+}
+
+function renderPartySummaryCard(label, amount, count, type) {
+  const tone = type === 'debiteur' ? 'income' : 'expense';
+  return `
+    <article class="acc-card acc-party-summary ${tone}">
+      <div class="acc-party-summary__header">
+        <p class="eyebrow">${escapeHtml(label)}</p>
+        <button type="button" class="chip ghost" data-open-party="${type}">Bekijk</button>
+      </div>
+      <div class="acc-party-summary__total">${formatCurrency(amount, 'EUR')}</div>
+      <p class="muted">${count} ${count === 1 ? 'relatie' : 'relaties'} • tik om details te zien of toe te voegen.</p>
+      <div class="acc-party-summary__actions">
+        <button type="button" class="acc-table-action groen" data-open-party="${type}">Overzicht</button>
+        <button type="button" class="acc-table-action" data-add-party="${type}">+ Nieuwe ${type}</button>
+      </div>
+    </article>
+  `;
 }
 
 function computeLedgerAggregatesForFilters() {
@@ -1304,6 +1358,36 @@ function buildProjectionData(ledgerData) {
   return { labels, balances, inflows, outflows, startBalance, breakdown, state };
 }
 
+function renderProjectionSummary(projection) {
+  const state = projection?.state || accountingState.projection || {};
+  const lastBalance = Array.isArray(projection?.balances) && projection.balances.length
+    ? projection.balances[projection.balances.length - 1]
+    : state.currentBalance || 0;
+  const digest = [
+    { label: 'Startsalo', value: state.currentBalance || 0 },
+    { label: 'Projectie einde', value: lastBalance }
+  ];
+  return `
+    <section class="acc-card acc-projection is-compact" aria-label="Cashflow projectie">
+      <div class="acc-projection-top">
+        <div>
+          <p class="eyebrow">Cashflow projectie</p>
+          <h3>Verwachting komende ${resolveHorizonMonths(state.horizon || 6)} maanden</h3>
+          <div class="acc-projection-digest">
+            ${digest.map(renderProjectionDigestItem).join('')}
+          </div>
+        </div>
+        <div class="acc-projection-actions">
+          <button type="button" class="acc-table-action" data-open-projection>Bekijk details</button>
+        </div>
+      </div>
+      <div class="acc-projection-chart">
+        <canvas id="chartCashProjectionMini" aria-label="Projectie" role="img"></canvas>
+      </div>
+    </section>
+  `;
+}
+
 function resolveAverageMonthlyIncome(ledgerData) {
   const perMonth = Array.isArray(ledgerData?.perMonth) ? ledgerData.perMonth : [];
   if (!perMonth.length) return 0;
@@ -1367,10 +1451,17 @@ function projectPurchaseInvoices(monthsAhead) {
 
 function resolveEventAmount(event, keys) {
   for (const key of keys) {
-    const value = event?.[key] ?? event?.forecast?.[key] ?? event?.budget?.[key];
+    const value = event?.[key]
+      ?? event?.forecast?.[key]
+      ?? event?.budget?.[key]
+      ?? event?.verwachting?.[key];
     if (value == null) continue;
     const num = Number(value);
     if (Number.isFinite(num)) return num;
+  }
+  if (Array.isArray(event?.verwachteOmzet)) {
+    const sum = event.verwachteOmzet.reduce((total, val) => total + (Number(val?.bedrag || val?.amount) || 0), 0);
+    if (Number.isFinite(sum) && sum !== 0) return sum;
   }
   return 0;
 }
@@ -1414,8 +1505,8 @@ function formatMonthLabel(date) {
   return formatter.format(date);
 }
 
-function drawProjectionChart(existingChart, projection) {
-  const canvas = document.getElementById('chartCashProjection');
+function drawProjectionChart(existingChart, projection, canvasId = 'chartCashProjection') {
+  const canvas = document.getElementById(canvasId);
   if (!canvas || !projection) return existingChart;
   try { existingChart?.destroy?.(); } catch (err) { console.debug?.('[Accounting] Chart cleanup', err); }
   const context = canvas.getContext('2d');
@@ -1430,11 +1521,13 @@ function drawProjectionChart(existingChart, projection) {
         borderColor: '#2A9626',
         backgroundColor: 'rgba(42,150,38,0.12)',
         tension: 0.25,
-        fill: true
+        fill: true,
+        pointRadius: 2
       }]
     },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
         y: { beginAtZero: false }
@@ -1480,20 +1573,101 @@ function bindProjectionControls(root) {
   });
 }
 
+function bindProjectionModal(root, projection) {
+  if (!root) return;
+  root.querySelector('[data-open-projection]')?.addEventListener('click', () => {
+    openProjectionModal(projection);
+  });
+}
+
+function openProjectionModal(projection) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box acc-projection-modal" role="dialog" aria-label="Projectie detail">
+      <header class="modal-header">
+        <h3 class="modal-title">Cashflow projectie</h3>
+        <div class="modal-actions">
+          <button type="button" class="modal-close-btn" aria-label="Sluiten">×</button>
+        </div>
+      </header>
+      ${renderProjectionControls(projection)}
+      <div class="acc-projection-chart">
+        <canvas id="chartCashProjection" aria-label="Projectie" role="img"></canvas>
+      </div>
+    </div>
+  `;
+  const close = () => {
+    overlay.classList.add('closing');
+    document.body.classList.remove('modal-open');
+    setTimeout(() => overlay.remove(), 180);
+  };
+  overlay.addEventListener('click', (evt) => {
+    if (evt.target === overlay) close();
+  });
+  overlay.querySelector('.modal-close-btn')?.addEventListener('click', close);
+  document.body.classList.add('modal-open');
+  document.body.appendChild(overlay);
+  bindProjectionControls(overlay);
+  if (typeof Chart === 'function') {
+    ledgerCharts.projection = drawProjectionChart(ledgerCharts.projection, projection);
+  }
+}
+
 function sumOpenDebtors() {
-  const parties = mergePartyLists([], collectLedgerParties().debtors || []);
+  const parties = collectAllParties().debtors || [];
   return parties.reduce((sum, party) => {
     if ((resolvePartyCurrency(party) || 'EUR') !== 'EUR') return sum;
     return sum + Math.max(0, Number(resolvePartyBalance(party)) || 0);
   }, 0);
 }
 
+function addManualParty(type, payload) {
+  const normalized = normalizeManualParty(payload, type === 'debiteur' ? 'debiteur' : 'crediteur');
+  if (!normalized) return;
+  if (!accountingState.partyCache) accountingState.partyCache = { debiteuren: [], crediteuren: [] };
+  const key = type === 'debiteur' ? 'debiteuren' : 'crediteuren';
+  accountingState.partyCache[key] = [...(accountingState.partyCache[key] || [])];
+  const existingIndex = accountingState.partyCache[key].findIndex((item) => (item.id || item.naam) === (normalized.id || normalized.naam));
+  if (existingIndex >= 0) {
+    accountingState.partyCache[key][existingIndex] = normalized;
+  } else {
+    accountingState.partyCache[key].push(normalized);
+  }
+  if (!store.state.db?.debCrediteuren) {
+    store.state.db = store.state.db || {};
+    store.state.db.debCrediteuren = { debiteuren: [], crediteuren: [] };
+  }
+  store.state.db.debCrediteuren[key] = Array.isArray(store.state.db.debCrediteuren[key])
+    ? [...store.state.db.debCrediteuren[key]]
+    : [];
+  store.state.db.debCrediteuren[key].push(normalized);
+  persistPartyCache();
+}
+
 function sumOpenCreditors() {
-  const parties = mergePartyLists([], collectLedgerParties().creditors || []);
+  const parties = collectAllParties().creditors || [];
   return parties.reduce((sum, party) => {
     if ((resolvePartyCurrency(party) || 'EUR') !== 'EUR') return sum;
     return sum + Math.max(0, Number(resolvePartyBalance(party)) || 0);
   }, 0);
+}
+
+function normalizeManualParty(entry, fallbackType) {
+  if (!entry || typeof entry !== 'object') return null;
+  const id = (entry.id || entry.uuid || entry.code || '').toString().trim();
+  const resolvedId = id || `${fallbackType}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const balance = Number(entry.balance ?? entry.amount ?? entry.bedrag);
+  return {
+    id: resolvedId,
+    naam: (entry.naam || entry.name || entry.company || '').toString().trim() || 'Onbekend',
+    contact: (entry.contact || entry.email || entry.telefoon || entry.phone || '').toString().trim(),
+    iban: (entry.iban || entry.bank || '').toString().trim(),
+    nota: (entry.nota || entry.note || entry.opmerking || '').toString().trim(),
+    type: fallbackType,
+    amount: Number.isFinite(balance) ? balance : undefined,
+    raw: { ...entry, amount: Number.isFinite(balance) ? balance : entry.amount }
+  };
 }
 
 function resetLedgerCharts() {
@@ -1520,12 +1694,7 @@ function bindDashboardNavButtons(container) {
 }
 
 function renderDebCredOverview() {
-  const data = store.state.db?.debCrediteuren;
-  const baseDebtors = Array.isArray(data?.debiteuren) ? data.debiteuren : [];
-  const baseCreditors = Array.isArray(data?.crediteuren) ? data.crediteuren : [];
-  const ledgerParties = collectLedgerParties();
-  const debtors = mergePartyLists(baseDebtors, ledgerParties.debtors);
-  const creditors = mergePartyLists(baseCreditors, ledgerParties.creditors);
+  const { debtors, creditors } = collectAllParties();
   if (!debtors.length && !creditors.length) {
     return '<article class="acc-card acc-empty">Geen debiteuren of crediteuren geregistreerd.</article>';
   }
@@ -1535,6 +1704,18 @@ function renderDebCredOverview() {
       ${renderPartyCard('Crediteuren', creditors, 'expense')}
     </section>
   `;
+}
+
+function collectAllParties() {
+  const data = store.state.db?.debCrediteuren;
+  const baseDebtors = Array.isArray(data?.debiteuren) ? data.debiteuren : [];
+  const baseCreditors = Array.isArray(data?.crediteuren) ? data.crediteuren : [];
+  const cacheDebtors = Array.isArray(accountingState.partyCache?.debiteuren) ? accountingState.partyCache.debiteuren : [];
+  const cacheCreditors = Array.isArray(accountingState.partyCache?.crediteuren) ? accountingState.partyCache.crediteuren : [];
+  const ledgerParties = collectLedgerParties();
+  const debtors = mergePartyLists([...baseDebtors, ...cacheDebtors], ledgerParties.debtors);
+  const creditors = mergePartyLists([...baseCreditors, ...cacheCreditors], ledgerParties.creditors);
+  return { debtors, creditors };
 }
 
 function renderPartyCard(title, parties, tone) {
@@ -1582,6 +1763,114 @@ function renderPartyRow(party, tone) {
       <td class="${amountClass}">${formatCurrency(Math.abs(balance), currency)}</td>
     </tr>
   `;
+}
+
+function bindPartyCardActions(container) {
+  if (!container) return;
+  container.querySelectorAll('[data-open-party]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const type = button.getAttribute('data-open-party');
+      openPartyModal(type);
+    });
+  });
+  container.querySelectorAll('[data-add-party]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const type = button.getAttribute('data-add-party');
+      openPartyModal(type, { startOnForm: true });
+    });
+  });
+}
+
+function openPartyModal(type = 'debiteur', options = {}) {
+  const { debtors, creditors } = collectAllParties();
+  const parties = type === 'crediteur' ? creditors : debtors;
+  const title = type === 'crediteur' ? 'Crediteuren' : 'Debiteuren';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box acc-party-modal" role="dialog" aria-label="${escapeHtml(title)}">
+      <header class="modal-header">
+        <h3 class="modal-title">${escapeHtml(title)} overzicht</h3>
+        <button type="button" class="modal-close-btn" aria-label="Sluiten">×</button>
+      </header>
+      <section class="acc-party-modal__grid">
+        <div>
+          <p class="muted">Bekijk openstaande partijen en bedragen. Voeg handmatig een nieuwe relatie toe.</p>
+          <div class="acc-table-wrapper">
+            <table class="acc-party-table">
+              <thead>
+                <tr>
+                  <th>Naam</th>
+                  <th>Contact</th>
+                  <th>Openstaand</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${parties.map((party) => renderPartyRow(party, type === 'debiteur' ? 'income' : 'expense')).join('') || '<tr><td colspan="3" class="acc-empty">Nog geen partijen</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <form class="acc-recurring-form acc-party-form" data-party-form>
+          <label class="acc-field">
+            <span>Naam</span>
+            <input type="text" name="naam" required placeholder="Naam van ${escapeHtml(title).toLowerCase()}">
+          </label>
+          <label class="acc-field">
+            <span>Contact</span>
+            <input type="text" name="contact" placeholder="E-mail of telefoon">
+          </label>
+          <label class="acc-field">
+            <span>Openstaand bedrag (€)</span>
+            <input type="number" step="0.01" name="balance" placeholder="0,00">
+          </label>
+          <label class="acc-field">
+            <span>IBAN / Bank</span>
+            <input type="text" name="iban" placeholder="NL...">
+          </label>
+          <label class="acc-field">
+            <span>Notitie</span>
+            <input type="text" name="nota" placeholder="Optioneel">
+          </label>
+          <div class="acc-recurring-actions">
+            <button type="submit" class="acc-table-action groen">Opslaan</button>
+            <button type="button" class="acc-table-action" data-close>Annuleren</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+  const close = () => {
+    overlay.classList.add('closing');
+    document.body.classList.remove('modal-open');
+    setTimeout(() => overlay.remove(), 180);
+  };
+  overlay.querySelector('[data-close]')?.addEventListener('click', close);
+  overlay.querySelector('.modal-close-btn')?.addEventListener('click', close);
+  overlay.addEventListener('click', (evt) => {
+    if (evt.target === overlay) close();
+  });
+  const form = overlay.querySelector('[data-party-form]');
+  form?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(form);
+    addManualParty(type === 'crediteur' ? 'crediteur' : 'debiteur', {
+      naam: formData.get('naam'),
+      contact: formData.get('contact'),
+      iban: formData.get('iban'),
+      nota: formData.get('nota'),
+      balance: Number(formData.get('balance')) || 0,
+      amount: Number(formData.get('balance')) || 0
+    });
+    close();
+    refreshAccountingView();
+  });
+  document.body.classList.add('modal-open');
+  document.body.appendChild(overlay);
+  if (options.startOnForm) {
+    const focusTarget = overlay.querySelector('input[name="naam"]');
+    setTimeout(() => focusTarget?.focus(), 60);
+  }
 }
 
 function renderPayables() {
