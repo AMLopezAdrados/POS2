@@ -3,7 +3,7 @@
 // Centrale store als enige state bron
 import { store } from './store.js';
 import { apiFetch } from './api.js';
-import { addVerkoopMutatie, setPaperChecklistEntry } from './3_data.js';
+import { addVerkoopMutatie } from './3_data.js';
 
 // ============ Globale UI Helpers ============
 
@@ -238,24 +238,6 @@ function buildTopbarContextChips(activeDay, activeEvent, session) {
                     <span class="tb-chip__content">
                         <span class="tb-chip__title">${transferTotal}</span>
                         <span class="tb-chip__meta">${transferLabel}</span>
-                    </span>
-                </span>
-            `);
-        }
-
-        const paperStatus = computePaperChecklistStatus(activeEvent, mutationTotals);
-        if (paperStatus.total > 0) {
-            const outstandingCount = paperStatus.outstanding.length;
-            const done = outstandingCount === 0;
-            const icon = done ? '✅' : '📝';
-            const title = done ? 'Alles ingevoerd' : `${outstandingCount}`;
-            const meta = done ? 'Papier → app klaar' : (outstandingCount === 1 ? 'product open' : 'producten open');
-            chips.push(`
-                <span class="tb-chip tb-chip--paper">
-                    <span class="tb-chip__icon" aria-hidden="true">${icon}</span>
-                    <span class="tb-chip__content">
-                        <span class="tb-chip__title">${escapeHtml(String(title))}</span>
-                        <span class="tb-chip__meta">${escapeHtml(meta)}</span>
                     </span>
                 </span>
             `);
@@ -792,8 +774,11 @@ function renderDashboardSummary(aggregate, currentCount, upcomingCount, tasks) {
     const tasksCount = tasks.length;
     const directPct = Math.round(toSafeNumber(aggregate?.debtorPercentages?.DIRECT));
     const debtorPct = Math.round(toSafeNumber(aggregate?.debtorPercentages?.DEBTOR));
+    const netForMargin = Number.isFinite(aggregate.adjustedNetResultEUR)
+        ? aggregate.adjustedNetResultEUR
+        : aggregate.netResultEUR;
     const marginPct = aggregate.totalRevenueEUR
-        ? Math.round((aggregate.netResultEUR / aggregate.totalRevenueEUR) * 100)
+        ? Math.round((netForMargin / aggregate.totalRevenueEUR) * 100)
         : 0;
 
     const upcomingMeta = upcomingCount
@@ -933,6 +918,14 @@ function renderDashboardEventDeck(mount, current, upcoming) {
 
     mount.innerHTML = `<div class="event-deck">${sections.join('')}</div>`;
 
+    mount.querySelectorAll('.event-card-actions [data-action="add-cost"]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openQuickCostForEvent(btn.dataset.eventRef);
+        });
+    });
+
     mount.querySelectorAll('.dashboard-event-card').forEach(card => {
         const ref = card.dataset.eventRef;
         card.addEventListener('click', () => openEventActionModal(ref));
@@ -943,6 +936,22 @@ function renderDashboardEventDeck(mount, current, upcoming) {
             }
         });
     });
+}
+
+function openQuickCostForEvent(ref) {
+    if (!ref) return;
+    import('./9_eventdetails.js')
+        .then((mod) => {
+            if (typeof mod?.openEventDetail === 'function') {
+                return mod.openEventDetail(ref, { initialTab: 'kosten', autoOpenCostModal: true });
+            }
+            showAlert('Kostenformulier kon niet worden geopend.', 'error');
+            return null;
+        })
+        .catch((err) => {
+            console.error('[Dashboard] Kosten openen mislukt', err);
+            showAlert('Kostenformulier kon niet worden geopend.', 'error');
+        });
 }
 
 const TASK_SEVERITY_WEIGHT = { critical: 0, high: 1, medium: 2, info: 3 };
@@ -1048,41 +1057,6 @@ function renderDashboardHighlights(current, upcoming, aggregate) {
 
     const activeDay = store.getActiveEventDay?.();
     const activeEvent = activeDay ? resolveActiveEventRecord() : null;
-    if (activeDay && activeEvent) {
-        const mutationTotals = aggregateEventMutationTotals(activeEvent);
-        const paperStatus = computePaperChecklistStatus(activeEvent, mutationTotals);
-        if (paperStatus.total > 0) {
-            const outstandingCount = paperStatus.outstanding.length;
-            const done = outstandingCount === 0;
-            const catalog = getCheeseProductCatalog();
-            const productLabels = paperStatus.outstanding
-                .slice(0, 3)
-                .map(id => escapeHtml(resolveCheeseProduct(catalog, id)?.naam || id));
-            const moreCount = Math.max(0, outstandingCount - productLabels.length);
-            const listMarkup = done
-                ? '<p class="dashboard-highlight-card__meta">Alle turflijsten zijn ingevoerd.</p>'
-                : `
-                    <ul class="paper-checklist-list">
-                        ${productLabels.map(label => `<li>${label}</li>`).join('')}
-                        ${moreCount > 0 ? `<li>+${moreCount} andere</li>` : ''}
-                    </ul>
-                `;
-            const headline = done
-                ? 'Papier ingevoerd'
-                : (outstandingCount === 1 ? '1 product nog invoeren' : `${outstandingCount} producten nog invoeren`);
-            cards.push(`
-                <article class="dashboard-highlight-card dashboard-highlight-card--paper">
-                    <span class="dashboard-highlight-card__icon">${done ? '✅' : '📝'}</span>
-                    <h3>${escapeHtml(headline)}</h3>
-                    ${listMarkup}
-                    <div class="dashboard-highlight-actions">
-                        <button type="button" class="btn-secondary" data-dashboard-action="openQuickSale">Checklist open</button>
-                    </div>
-                </article>
-            `);
-        }
-    }
-
     const topProduct = computeDashboardTopProduct(current);
     if (topProduct) {
         cards.push(`
@@ -1096,15 +1070,18 @@ function renderDashboardHighlights(current, upcoming, aggregate) {
     }
 
     if (aggregate.count) {
+        const netForMargin = Number.isFinite(aggregate.adjustedNetResultEUR)
+            ? aggregate.adjustedNetResultEUR
+            : aggregate.netResultEUR;
         const marginPct = aggregate.totalRevenueEUR
-            ? Math.round((aggregate.netResultEUR / aggregate.totalRevenueEUR) * 100)
+            ? Math.round((netForMargin / aggregate.totalRevenueEUR) * 100)
             : 0;
         cards.push(`
             <article class="dashboard-highlight-card">
                 <span class="dashboard-highlight-card__icon">📈</span>
                 <h3>Gemiddelde marge</h3>
                 <p class="dashboard-highlight-card__value">${escapeHtml(`${marginPct}%`)}</p>
-                <p class="dashboard-highlight-card__meta">Netto resultaat ${escapeHtml(formatCurrencyValue(roundCurrency(aggregate.netResultEUR), 'EUR'))}</p>
+                <p class="dashboard-highlight-card__meta">Netto resultaat incl. kaaskosten ${escapeHtml(formatCurrencyValue(roundCurrency(netForMargin), 'EUR'))}</p>
             </article>
         `);
     }
@@ -1206,6 +1183,8 @@ function aggregateCurrentEventFinancials(list) {
         cheeseRevenueEUR: 0,
         cheeseRevenueUSD: 0,
         cheeseCostEUR: 0,
+        cheeseCostIndicativeEUR: 0,
+        pendingCheeseCostEUR: 0,
         souvenirRevenueEUR: 0,
         souvenirRevenueUSD: 0,
         totalRevenueEUR: 0,
@@ -1219,10 +1198,17 @@ function aggregateCurrentEventFinancials(list) {
         const event = item?.event || item;
         if (!event) return;
         const metrics = item?.metrics || computeEventFinancials(event);
+        const cheeseCostEUR = toSafeNumber(metrics.cheeseCostEUR);
+        const cheeseCostIndicativeEUR = toSafeNumber(metrics.cheeseCostIndicativeEUR);
+        const effectiveCheeseCostEUR = cheeseCostEUR || cheeseCostIndicativeEUR;
+        const pendingCheeseCostEUR = metrics.cheeseMetricsReady ? 0 : Math.max(0, effectiveCheeseCostEUR - cheeseCostEUR);
+
         totals.cheeseUnits += toSafeNumber(metrics.cheeseUnits);
         totals.cheeseRevenueEUR += toSafeNumber(metrics.cheeseRevenueEUR);
         totals.cheeseRevenueUSD += toSafeNumber(metrics.cheeseRevenueUSD);
-        totals.cheeseCostEUR += toSafeNumber(metrics.cheeseCostEUR);
+        totals.cheeseCostEUR += cheeseCostEUR;
+        totals.cheeseCostIndicativeEUR += cheeseCostIndicativeEUR;
+        totals.pendingCheeseCostEUR += pendingCheeseCostEUR;
         totals.souvenirRevenueEUR += toSafeNumber(metrics.souvenirRevenueEUR);
         totals.souvenirRevenueUSD += toSafeNumber(metrics.souvenirRevenueUSD);
         totals.totalRevenueEUR += toSafeNumber(metrics.totalRevenueEUR);
@@ -1239,7 +1225,9 @@ function aggregateCurrentEventFinancials(list) {
         DEBTOR: debtorTotal ? (totals.debtorTotalsEUR.DEBTOR / debtorTotal) * 100 : 0
     };
 
-    return { ...totals, debtorPercentages };
+    const adjustedNetResultEUR = roundCurrency(totals.netResultEUR - totals.pendingCheeseCostEUR);
+
+    return { ...totals, debtorPercentages, adjustedNetResultEUR };
 }
 
 function renderCurrentEventsSummary(aggregate) {
@@ -1337,6 +1325,14 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
         ? `<p class="dashboard-event-card__note">${notes.join(' • ')}</p>`
         : '';
 
+    const actions = [];
+    if (status === 'current') {
+        actions.push(`<button type="button" class="event-card-btn secondary" data-action="add-cost" data-event-ref="${escapeHtml(eventRef)}">+ Kosten</button>`);
+    }
+    const actionsHtml = actions.length
+        ? `<div class="event-card-actions">${actions.join('')}</div>`
+        : '';
+
     const title = escapeHtml(ev?.naam || 'Onbekend evenement');
     const ariaLabel = `Acties voor ${title}`;
 
@@ -1378,6 +1374,7 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
             ${noteHtml}
             <footer class="dashboard-event-card__foot">
                 <span>Tap voor acties</span>
+                ${actionsHtml}
             </footer>
         </article>
     `;
@@ -3325,7 +3322,7 @@ function openQuickSaleModal() {
     header.className = 'quick-sale-modal__header';
     header.innerHTML = `
         <div>
-            <h2>Snelle verkoopregistratie</h2>
+            <h2>Verkoop invoeren</h2>
             <p>${escapeHtml(activeDay.eventName || 'Onbekend event')} • ${escapeHtml(formatTopbarDate(activeDay.date) || '')}</p>
         </div>
         <button type="button" class="quick-sale-close" aria-label="Sluiten">×</button>
@@ -3360,8 +3357,6 @@ function renderQuickSaleModalContent(context) {
             productMap.set(product.id, product);
         }
     });
-    const paperStatus = computePaperChecklistStatus(event || {}, mutationTotals);
-
     const grid = document.createElement('div');
     grid.className = 'quick-sale-grid';
 
@@ -3395,18 +3390,23 @@ function renderQuickSaleModalContent(context) {
         grid.appendChild(card);
     });
 
-    context.content.innerHTML = '';
-    context.content.appendChild(grid);
+    const summary = document.createElement('div');
+    summary.className = 'quick-sale-summary';
+    summary.innerHTML = `
+        <div class="quick-sale-summary__item">
+            <p>Totale verkopen</p>
+            <strong>${mutationTotals.total || 0}</strong>
+        </div>
+        <div class="quick-sale-summary__item">
+            <p>Mix bron</p>
+            <strong>Verkopen + begin/eindvoorraad</strong>
+            <span>Elke klik registreert een individuele verkoop.</span>
+        </div>
+    `;
 
-    const checklistSection = buildQuickSaleChecklistSection(context.eventId, paperStatus, productMap, catalog);
-    if (checklistSection) {
-        context.content.appendChild(checklistSection);
-        checklistSection.addEventListener('change', (ev) => {
-            const input = ev.target.closest('input[data-product]');
-            if (!input) return;
-            handleQuickSaleChecklistToggle(context, input.dataset.product, input.checked, input);
-        });
-    }
+    context.content.innerHTML = '';
+    context.content.appendChild(summary);
+    context.content.appendChild(grid);
 
     if (!context.bound) {
         context.content.addEventListener('click', (ev) => {
@@ -3462,82 +3462,6 @@ function getQuickSaleProducts() {
         return a.label.localeCompare(b.label);
     });
     return items;
-}
-
-function buildQuickSaleChecklistSection(eventId, paperStatus, productMap, catalog) {
-    if (!paperStatus || paperStatus.total === 0) return null;
-    const section = document.createElement('section');
-    section.className = 'quick-sale-checklist';
-    section.dataset.eventId = eventId || '';
-
-    const outstanding = paperStatus.outstanding.length;
-    const done = outstanding === 0;
-    const title = done ? 'Papier ingevoerd' : 'Papier → app checklist';
-    const badge = done ? 'Klaar' : `${outstanding} open`;
-
-    const header = document.createElement('header');
-    header.className = 'quick-sale-checklist__header';
-    header.innerHTML = `
-        <div>
-            <h3>${escapeHtml(title)}</h3>
-            <p>${done ? 'Alle turfs zijn verwerkt.' : 'Vink af zodra je een product hebt ingevoerd.'}</p>
-        </div>
-        <span class="quick-sale-checklist__badge">${escapeHtml(badge)}</span>
-    `;
-    section.appendChild(header);
-
-    const list = document.createElement('ul');
-    list.className = 'quick-sale-checklist__list';
-
-    paperStatus.items.forEach((item) => {
-        const product = productMap.get(item.productId) || resolveCheeseProduct(catalog, item.productId) || {};
-        const label = product.label || product.naam || product.name || item.productId;
-        const breakdown = [];
-        if (item.saleQuantity > 0) {
-            breakdown.push(`${item.saleQuantity}× verkoop`);
-        }
-        if (item.transferQuantity > 0) {
-            breakdown.push(`${item.transferQuantity}× verplaatst`);
-        }
-        const quantityLabel = breakdown.length
-            ? `${item.quantity}× (${breakdown.join(' + ')})`
-            : `${item.quantity}×`;
-        const li = document.createElement('li');
-        li.className = 'quick-sale-checklist__item';
-        li.innerHTML = `
-            <label>
-                <input type="checkbox" data-product="${escapeHtml(item.productId)}" ${item.checked ? 'checked' : ''}>
-                <span class="quick-sale-checklist__name">${escapeHtml(label)}</span>
-            </label>
-            <small>${escapeHtml(quantityLabel)}</small>
-        `;
-        list.appendChild(li);
-    });
-
-    section.appendChild(list);
-    return section;
-}
-
-async function handleQuickSaleChecklistToggle(context, productId, checked, inputEl) {
-    if (!context || !productId) return;
-    if (inputEl) {
-        inputEl.disabled = true;
-    }
-    try {
-        await setPaperChecklistEntry(context.eventId, productId, checked, { silent: true });
-        renderQuickSaleModalContent(context);
-        showAlert(checked ? 'Gemarkeerd als ingevoerd.' : 'Markering verwijderd.', 'success');
-    } catch (err) {
-        console.error('[POS] paper checklist toggle failed', err);
-        showAlert('Bijwerken van checklist mislukt.', 'error');
-        if (inputEl) {
-            inputEl.checked = !checked;
-        }
-    } finally {
-        if (inputEl) {
-            inputEl.disabled = false;
-        }
-    }
 }
 
 function injectQuickSaleStyles() {
@@ -3690,76 +3614,35 @@ function injectQuickSaleStyles() {
             background: rgba(231, 76, 60, 0.15);
             color: #b02a1c;
         }
-        .quick-sale-checklist {
-            margin-top: 1.5rem;
-            padding-top: 1rem;
-            border-top: 1px solid rgba(15, 23, 42, 0.08);
+        .quick-sale-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .quick-sale-summary__item {
+            background: #f8fafc;
+            border-radius: 1rem;
+            padding: 0.9rem 1rem;
             display: flex;
             flex-direction: column;
-            gap: 1rem;
+            gap: 0.2rem;
+            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
         }
-        .quick-sale-checklist__header {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 0.75rem;
-        }
-        .quick-sale-checklist__header h3 {
+        .quick-sale-summary__item p {
             margin: 0;
-            font-size: 1.1rem;
-        }
-        .quick-sale-checklist__header p {
-            margin: 0.25rem 0 0;
             color: #4b5563;
             font-size: 0.9rem;
         }
-        .quick-sale-checklist__badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            background: #FFC500;
+        .quick-sale-summary__item strong {
+            font-size: 1.4rem;
             color: #1f2937;
+            line-height: 1.2;
+        }
+        .quick-sale-summary__item span {
+            color: #1f6d1c;
             font-weight: 700;
-            padding: 0.35rem 0.85rem;
-            border-radius: 999px;
-            text-transform: uppercase;
-            font-size: 0.85rem;
-            white-space: nowrap;
-        }
-        .quick-sale-checklist__list {
-            list-style: none;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 0.6rem;
-        }
-        .quick-sale-checklist__item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.75rem;
-            padding: 0.75rem 0.85rem;
-            border-radius: 0.85rem;
-            background: rgba(248, 250, 252, 0.9);
-            box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.05);
-        }
-        .quick-sale-checklist__item label {
-            display: flex;
-            align-items: center;
-            gap: 0.6rem;
-            font-size: 1rem;
-            color: #1f2937;
-            flex: 1;
-        }
-        .quick-sale-checklist__item input {
-            width: 1.2rem;
-            height: 1.2rem;
-        }
-        .quick-sale-checklist__item small {
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: #4b5563;
+            font-size: 0.9rem;
         }
         @media (max-width: 640px) {
             .quick-sale-fab {
@@ -4173,70 +4056,6 @@ function aggregateEventMutationTotals(event, options = {}) {
             products: transferProducts,
             entries: transferEntries
         }
-    };
-}
-
-function computePaperChecklistStatus(event, mutationTotals = null) {
-    const totals = mutationTotals || aggregateEventMutationTotals(event || {});
-    const saleProducts = totals?.products || {};
-    const transferProducts = totals?.transfers?.products || {};
-    const productKeys = new Set([
-        ...Object.keys(saleProducts),
-        ...Object.keys(transferProducts)
-    ]);
-    const checklistRaw = event?.verkoopMutaties?.paperChecklist || {};
-    const normalizedChecklist = new Map();
-
-    Object.entries(checklistRaw).forEach(([productId, entry]) => {
-        const key = normalizeProductKey(productId);
-        if (!key) return;
-        const checkedAt = entry?.checkedAt || entry?.timestamp || entry?.ts || null;
-        normalizedChecklist.set(key, {
-            checkedAt: checkedAt ? new Date(checkedAt).toISOString() : null,
-            userId: entry?.userId || entry?.user || entry?.by || null,
-            originalKey: productId
-        });
-    });
-
-    const items = [];
-    productKeys.forEach((productId) => {
-        const normalized = normalizeProductKey(productId);
-        if (!normalized) return;
-        const saleQuantity = Math.max(0, Math.round(Number(saleProducts[productId]) || 0));
-        const transferQuantity = Math.max(0, Math.round(Number(transferProducts[productId]) || 0));
-        const quantity = saleQuantity + transferQuantity;
-        if (!quantity) return;
-        const checklistEntry = normalizedChecklist.get(normalized);
-        let origin = 'sale';
-        if (transferQuantity > 0 && saleQuantity > 0) {
-            origin = 'mixed';
-        } else if (transferQuantity > 0) {
-            origin = 'transfer';
-        }
-        items.push({
-            productId,
-            normalized,
-            quantity,
-            saleQuantity,
-            transferQuantity,
-            origin,
-            checked: Boolean(checklistEntry?.checkedAt),
-            checklistEntry
-        });
-    });
-
-    items.sort((a, b) => a.productId.localeCompare(b.productId, 'nl', { sensitivity: 'base' }));
-
-    const total = items.length;
-    const checked = items.filter(item => item.checked).length;
-    const outstanding = items.filter(item => !item.checked).map(item => item.productId);
-
-    return {
-        total,
-        checked,
-        outstanding,
-        items,
-        checklist: checklistRaw
     };
 }
 
@@ -5366,10 +5185,6 @@ function injectCoreStylesOnce() {
             .dashboard-highlight-card__icon { font-size: 1.35rem; }
             .dashboard-highlight-card__value { font-weight: 900; font-size: 1.05rem; color: #143814; margin: 0; }
             .dashboard-highlight-card__meta { font-size: .8rem; font-weight: 700; color: #52635b; margin: 0; }
-            .dashboard-highlight-card--paper { background: rgba(255,197,0,.18); border: 1px solid rgba(255,197,0,.35); }
-            .dashboard-highlight-card--paper .dashboard-highlight-card__icon { font-size: 1.6rem; }
-            .paper-checklist-list { list-style: none; margin: .25rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .25rem; font-size: .85rem; font-weight: 700; color: #35513a; }
-            .paper-checklist-list li { padding: .1rem 0; }
             .dashboard-highlight-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
             .dashboard-highlight-actions .btn-secondary { border-radius: .8rem; font-weight: 800; }
             #salesMount { display: flex; flex-direction: column; gap: .8rem; }

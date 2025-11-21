@@ -3,7 +3,8 @@
 import { db, saveEvent, getEventOmzet, recordExtraCostLedgerEntry, deleteExtraCostLedgerEntry, recordEventInvoiceLedgerEntry } from './3_data.js';
 import { showAlert, showLoading, hideLoading, computeEventFinancials, calculateOmzetTotals, formatCurrencyValue, formatCurrencyPair } from './4_ui.js';
 
-export async function openEventDetail(eventRef) {
+export async function openEventDetail(eventRef, options = {}) {
+  const opts = typeof options === 'string' ? { initialTab: options } : (options || {});
   const event = resolveEvent(eventRef);
   if (!event) {
     showAlert('❌ Evenement niet gevonden', 'error');
@@ -17,7 +18,17 @@ export async function openEventDetail(eventRef) {
   try {
     showLoading('Gegevens laden…');
     const state = await buildState(event);
+    const requestedTab = (opts.initialTab || '').toString();
+    const allowedTabs = new Set(['overzicht', 'voorraad', 'omzet', 'kosten']);
+    if (allowedTabs.has(requestedTab)) {
+      state.activeTab = requestedTab;
+    }
     renderAll(modal, state);
+    if (opts.autoOpenCostModal === true && state.activeTab === 'kosten' && !isClosed(state.event)) {
+      setTimeout(() => {
+        modal.body.querySelector('#ed-add-kost')?.click();
+      }, 60);
+    }
   } catch (err) {
     console.error('[Eventdetails] Laden mislukt', err);
     showAlert('Kon eventdetails niet laden.', 'error');
