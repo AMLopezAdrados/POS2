@@ -1398,7 +1398,7 @@ export async function loadData(retries = 3, delayMs = 5000) {
       fetchWithRetry('/reizen.json' + nocache),
       fetchOptionalJson('/verkoopmix.json' + nocache),
       fetchOptionalJson('/debiteuren.json' + nocache),
-      fetchOptionalJson('/accounting.json' + nocache),
+      fetchOptionalJson('/api/accounting.json' + nocache),
       fetchOptionalJson('/settings.json' + nocache)
     ]);
 
