@@ -89,10 +89,18 @@ export async function showMainShell() {
                     <div id=\"dashboardSummaryMount\"></div>
                     <div id=\"dashboardActionMount\"></div>
                     <div id=\"dashboardHighlightsMount\"></div>
-                    <div id=\"salesMount\"></div>
                     <div id=\"dashboardEventsMount\"></div>
-                    <div id=\"goalProgressMount\"></div>
-                    <div id=\"reisPlannerMount\"></div>
+                    <section id=\"dashboardMoreSection\" class=\"dashboard-more\">
+                        <button type=\"button\" class=\"dashboard-more__toggle\" data-more-toggle>
+                            <span class=\"dashboard-more__label\">Meer inzichten</span>
+                            <span class=\"dashboard-more__chevron\" aria-hidden=\"true\">▼</span>
+                        </button>
+                        <div class=\"dashboard-more__content\" hidden>
+                            <div id=\"salesMount\"></div>
+                            <div id=\"goalProgressMount\"></div>
+                            <div id=\"reisPlannerMount\"></div>
+                        </div>
+                    </section>
                 </div>
             </section>
             <section id=\"panel-daginfo\" class=\"app-panel\"></section>
@@ -116,6 +124,16 @@ export async function showMainShell() {
     initUpcomingEventsWatcher();
     renderActiveDayPanel();
     renderReisPlannerWidget();
+
+    const moreToggle = document.querySelector('[data-more-toggle]');
+    const moreContent = document.querySelector('.dashboard-more__content');
+    if (moreToggle && moreContent) {
+        moreToggle.addEventListener('click', () => {
+            const isHidden = moreContent.hasAttribute('hidden');
+            moreContent.toggleAttribute('hidden', !isHidden);
+            moreToggle.classList.toggle('dashboard-more__toggle--open', isHidden);
+        });
+    }
 
     // sales UI wordt elders getriggerd via store events
     ensureQuickSaleFab();
@@ -714,32 +732,32 @@ function renderEventCards() {
 
 function renderDashboardSummaryEmpty() {
     const activeDay = store.getActiveEventDay?.();
-    const activeHtml = activeDay
-        ? `<div class="dashboard-active-day"><span class="dashboard-active-day__icon">🗓️</span><div><strong>${escapeHtml(activeDay.eventName || 'Actieve dag')}</strong><span class="dashboard-active-day__meta">${escapeHtml(formatFullDate(activeDay.date) || '')}</span></div></div>`
-        : `<div class="dashboard-active-day dashboard-active-day--empty"><span class="dashboard-active-day__icon">🗓️</span><div><strong>Geen actieve dag</strong><span class="dashboard-active-day__meta">Kies een evenement om te starten.</span></div></div>`;
+    const activeValue = activeDay?.eventName || 'Geen actieve dag';
+    const activeMeta = activeDay
+        ? escapeHtml(formatFullDate(activeDay.date) || '')
+        : 'Kies een evenement om te starten';
+    const activeCta = activeDay
+        ? `<button type="button" class="dashboard-summary-card__cta" data-dashboard-nav="daginfo">Bekijk daginfo</button>`
+        : `<button type="button" class="dashboard-summary-card__cta" data-dashboard-nav="events">Selecteer evenement</button>`;
+
     return `
         <section class="dashboard-summary">
-            ${activeHtml}
-            <div class="dashboard-summary-grid">
-                <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Open taken</span>
-                    <span class="dashboard-summary-card__value">0</span>
-                    <span class="dashboard-summary-card__meta">Alles staat klaar.</span>
+            <div class="dashboard-summary-grid dashboard-summary-grid--compact">
+                <article class="dashboard-summary-card dashboard-summary-card--accent">
+                    <span class="dashboard-summary-card__label">Actieve dag</span>
+                    <span class="dashboard-summary-card__value">${escapeHtml(activeValue)}</span>
+                    <span class="dashboard-summary-card__meta">${escapeHtml(activeMeta)}</span>
+                    ${activeCta}
                 </article>
                 <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Actieve events</span>
-                    <span class="dashboard-summary-card__value">0</span>
-                    <span class="dashboard-summary-card__meta">Geen geplande evenementen.</span>
-                </article>
-                <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Totale omzet</span>
-                    <span class="dashboard-summary-card__value">€ 0,00</span>
-                    <span class="dashboard-summary-card__meta">Nog geen registraties.</span>
+                    <span class="dashboard-summary-card__label">Belangrijkste actie</span>
+                    <span class="dashboard-summary-card__value">Geen open taken</span>
+                    <span class="dashboard-summary-card__meta">Pak je eerste stap op zodra een event actief is.</span>
                 </article>
                 <article class="dashboard-summary-card">
                     <span class="dashboard-summary-card__label">Netto resultaat</span>
                     <span class="dashboard-summary-card__value">€ 0,00</span>
-                    <span class="dashboard-summary-card__meta">Wacht op eerste verkoop.</span>
+                    <span class="dashboard-summary-card__meta">Registreer dagomzet om voortgang te zien.</span>
                 </article>
             </div>
         </section>
@@ -748,32 +766,18 @@ function renderDashboardSummaryEmpty() {
 
 function renderDashboardSummary(aggregate, currentCount, upcomingCount, tasks) {
     const activeDay = store.getActiveEventDay?.();
-    const activeHtml = activeDay
-        ? `<button type="button" class="dashboard-active-day" data-dashboard-nav="daginfo">
-                <span class="dashboard-active-day__icon">🗓️</span>
-                <div>
-                    <strong>${escapeHtml(activeDay.eventName || 'Actieve dag')}</strong>
-                    <span class="dashboard-active-day__meta">${escapeHtml(formatFullDate(activeDay.date) || '')}</span>
-                </div>
-                <span class="dashboard-active-day__cta">Bekijk daginfo</span>
-            </button>`
-        : `<div class="dashboard-active-day dashboard-active-day--empty">
-                <span class="dashboard-active-day__icon">🗓️</span>
-                <div>
-                    <strong>Geen actieve dag</strong>
-                    <span class="dashboard-active-day__meta">Kies een evenement in het overzicht.</span>
-                </div>
-            </div>`;
+    const activeLabel = activeDay?.eventName || 'Geen actieve dag';
+    const activeMeta = activeDay
+        ? escapeHtml(formatFullDate(activeDay.date) || '')
+        : 'Selecteer een evenement om te starten';
+    const activeCta = activeDay
+        ? `<button type="button" class="dashboard-summary-card__cta" data-dashboard-nav="daginfo">Open daginfo</button>`
+        : `<button type="button" class="dashboard-summary-card__cta" data-dashboard-nav="events">Selecteer evenement</button>`;
 
-    const totalRevenueLabel = formatCurrencyPair(aggregate.totalRevenueEUR, aggregate.totalRevenueUSD);
     const netResultLabel = formatCurrencyValue(roundCurrency(aggregate.netResultEUR), 'EUR');
     const netClass = aggregate.netResultEUR >= 0
         ? 'dashboard-summary-card__value--positive'
         : 'dashboard-summary-card__value--negative';
-    const cheeseLabel = formatCheeseAmount(aggregate.cheeseUnits);
-    const tasksCount = tasks.length;
-    const directPct = Math.round(toSafeNumber(aggregate?.debtorPercentages?.DIRECT));
-    const debtorPct = Math.round(toSafeNumber(aggregate?.debtorPercentages?.DEBTOR));
     const netForMargin = Number.isFinite(aggregate.adjustedNetResultEUR)
         ? aggregate.adjustedNetResultEUR
         : aggregate.netResultEUR;
@@ -781,42 +785,44 @@ function renderDashboardSummary(aggregate, currentCount, upcomingCount, tasks) {
         ? Math.round((netForMargin / aggregate.totalRevenueEUR) * 100)
         : 0;
 
-    const upcomingMeta = upcomingCount
-        ? `${upcomingCount} starten binnen 7 dagen`
-        : 'Geen nieuwe evenementen deze week';
-
-    const taskMeta = tasksCount
-        ? 'Pak de belangrijkste acties op'
+    const primaryTask = tasks[0];
+    const hasTasks = Boolean(primaryTask);
+    const primaryActionLabel = hasTasks ? escapeHtml(primaryTask.title) : 'Geen open taken';
+    const primaryActionMeta = hasTasks
+        ? escapeHtml(primaryTask.description || 'Pak deze stap eerst op')
         : 'Alles loopt op schema';
+    let primaryActionCta = '';
+    if (hasTasks && primaryTask.action?.label) {
+        const attrs = [];
+        if (primaryTask.action.type === 'nav') attrs.push(`data-dashboard-nav="${escapeHtml(primaryTask.action.value)}"`);
+        if (primaryTask.action.type === 'event') attrs.push(`data-task-event="${escapeHtml(primaryTask.action.ref)}"`);
+        const attrString = attrs.length ? ` ${attrs.join(' ')}` : '';
+        primaryActionCta = `<button type="button" class="dashboard-summary-card__cta"${attrString}>${escapeHtml(primaryTask.action.label)}</button>`;
+    }
+
+    const timelineMeta = currentCount
+        ? `${currentCount} actief • ${upcomingCount ? `${upcomingCount} starten binnen 7 dagen` : 'geen nieuwe binnen 7 dagen'}`
+        : 'Koppel een evenement om te beginnen';
 
     return `
         <section class="dashboard-summary">
-            ${activeHtml}
-            <div class="dashboard-summary-grid">
+            <div class="dashboard-summary-grid dashboard-summary-grid--compact">
                 <article class="dashboard-summary-card dashboard-summary-card--accent">
-                    <span class="dashboard-summary-card__label">Open taken</span>
-                    <span class="dashboard-summary-card__value">${tasksCount}</span>
-                    <span class="dashboard-summary-card__meta">${escapeHtml(taskMeta)}</span>
+                    <span class="dashboard-summary-card__label">Actieve dag</span>
+                    <span class="dashboard-summary-card__value">${escapeHtml(activeLabel)}</span>
+                    <span class="dashboard-summary-card__meta">${activeMeta}</span>
+                    ${activeCta}
                 </article>
                 <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Actieve events</span>
-                    <span class="dashboard-summary-card__value">${currentCount}</span>
-                    <span class="dashboard-summary-card__meta">${escapeHtml(upcomingMeta)}</span>
-                </article>
-                <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Totale omzet</span>
-                    <span class="dashboard-summary-card__value">${escapeHtml(totalRevenueLabel)}</span>
-                    <span class="dashboard-summary-card__meta">${escapeHtml(`Netto marge ${marginPct}%`)}</span>
+                    <span class="dashboard-summary-card__label">Belangrijkste actie</span>
+                    <span class="dashboard-summary-card__value">${primaryActionLabel}</span>
+                    <span class="dashboard-summary-card__meta">${primaryActionMeta}</span>
+                    ${primaryActionCta}
                 </article>
                 <article class="dashboard-summary-card">
                     <span class="dashboard-summary-card__label">Netto resultaat</span>
                     <span class="dashboard-summary-card__value ${netClass}">${escapeHtml(netResultLabel)}</span>
-                    <span class="dashboard-summary-card__meta">${escapeHtml(`Debiteur ${debtorPct}% • Direct ${directPct}%`)}</span>
-                </article>
-                <article class="dashboard-summary-card">
-                    <span class="dashboard-summary-card__label">Kaas verkocht</span>
-                    <span class="dashboard-summary-card__value">${escapeHtml(cheeseLabel)}</span>
-                    <span class="dashboard-summary-card__meta">Souvenir-omzet ${escapeHtml(formatCurrencyPair(aggregate.souvenirRevenueEUR, aggregate.souvenirRevenueUSD))}</span>
+                    <span class="dashboard-summary-card__meta">${escapeHtml(`Netto marge ${marginPct}% • ${timelineMeta}`)}</span>
                 </article>
             </div>
         </section>
@@ -895,6 +901,9 @@ function bindDashboardSummaryActions(summaryMount) {
     summaryMount.querySelectorAll('[data-dashboard-nav]').forEach(btn => {
         btn.addEventListener('click', () => navigationActionHandler(btn.dataset.dashboardNav));
     });
+    summaryMount.querySelectorAll('[data-task-event]').forEach(btn => {
+        btn.addEventListener('click', () => openEventActionModal(btn.dataset.taskEvent));
+    });
 }
 
 function bindDashboardHighlightEvents(highlightsMount) {
@@ -918,14 +927,6 @@ function renderDashboardEventDeck(mount, current, upcoming) {
 
     mount.innerHTML = `<div class="event-deck">${sections.join('')}</div>`;
 
-    mount.querySelectorAll('.event-card-actions [data-action="add-cost"]').forEach(btn => {
-        btn.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            openQuickCostForEvent(btn.dataset.eventRef);
-        });
-    });
-
     mount.querySelectorAll('.dashboard-event-card').forEach(card => {
         const ref = card.dataset.eventRef;
         card.addEventListener('click', () => openEventActionModal(ref));
@@ -934,6 +935,14 @@ function renderDashboardEventDeck(mount, current, upcoming) {
                 ev.preventDefault();
                 openEventActionModal(ref);
             }
+        });
+    });
+
+    mount.querySelectorAll('[data-event-open]').forEach(btn => {
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openEventActionModal(btn.dataset.eventOpen);
         });
     });
 }
@@ -1300,10 +1309,6 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
     const badgeClass = status === 'current' ? 'badge-active' : 'badge-planned';
     const badgeLabel = status === 'current' ? 'Huidig' : 'Binnen 7 dagen';
     const metrics = metricsOverride || computeEventFinancials(ev);
-    const cheeseUnitsLabel = formatCheeseUnits(metrics.cheeseUnits);
-    const cheeseRevenueLabel = formatCurrencyPair(metrics.cheeseRevenueEUR, metrics.cheeseRevenueUSD);
-    const souvenirRevenueLabel = formatCurrencyPair(metrics.souvenirRevenueEUR, metrics.souvenirRevenueUSD);
-    const cheeseCostLabel = formatCurrencyValue(metrics.cheeseCostEUR, 'EUR');
     const totalRevenueLabel = formatCurrencyPair(metrics.totalRevenueEUR, metrics.totalRevenueUSD);
     const netResultLabel = formatCurrencyValue(metrics.netResultEUR, 'EUR');
     const profitClass = metrics.netResultEUR >= 0
@@ -1325,16 +1330,10 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
         ? `<p class="dashboard-event-card__note">${notes.join(' • ')}</p>`
         : '';
 
-    const actions = [];
-    if (status === 'current') {
-        actions.push(`<button type="button" class="event-card-btn secondary" data-action="add-cost" data-event-ref="${escapeHtml(eventRef)}">+ Kosten</button>`);
-    }
-    const actionsHtml = actions.length
-        ? `<div class="event-card-actions">${actions.join('')}</div>`
-        : '';
-
     const title = escapeHtml(ev?.naam || 'Onbekend evenement');
     const ariaLabel = `Acties voor ${title}`;
+
+    const actionCta = `<button type="button" class="dashboard-event-card__cta" data-event-open="${escapeHtml(eventRef)}">Open dag</button>`;
 
     return `
         <article class="event-card dashboard-event-card" data-event-ref="${escapeHtml(eventRef)}" data-status="${escapeHtml(status)}" role="button" tabindex="0" aria-label="${escapeHtml(ariaLabel)}">
@@ -1347,22 +1346,6 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
             </header>
             <div class="dashboard-event-card__metrics">
                 <div class="dashboard-event-card__metric">
-                    <span class="dashboard-event-card__metric-label">Kaas verkocht</span>
-                    <span class="dashboard-event-card__metric-value">${escapeHtml(cheeseUnitsLabel)}</span>
-                </div>
-                <div class="dashboard-event-card__metric">
-                    <span class="dashboard-event-card__metric-label">Kaasomzet</span>
-                    <span class="dashboard-event-card__metric-value">${escapeHtml(cheeseRevenueLabel)}</span>
-                </div>
-                <div class="dashboard-event-card__metric">
-                    <span class="dashboard-event-card__metric-label">Souvenir-omzet</span>
-                    <span class="dashboard-event-card__metric-value">${escapeHtml(souvenirRevenueLabel)}</span>
-                </div>
-                <div class="dashboard-event-card__metric">
-                    <span class="dashboard-event-card__metric-label">Kostprijs kaas</span>
-                    <span class="dashboard-event-card__metric-value">${escapeHtml(cheeseCostLabel)}</span>
-                </div>
-                <div class="dashboard-event-card__metric">
                     <span class="dashboard-event-card__metric-label">Totale omzet</span>
                     <span class="dashboard-event-card__metric-value">${escapeHtml(totalRevenueLabel)}</span>
                 </div>
@@ -1374,7 +1357,7 @@ function renderDashboardEventCard(ev, status, metricsOverride = null) {
             ${noteHtml}
             <footer class="dashboard-event-card__foot">
                 <span>Tap voor acties</span>
-                ${actionsHtml}
+                ${actionCta}
             </footer>
         </article>
     `;
@@ -5144,23 +5127,19 @@ function injectCoreStylesOnce() {
             #goalProgressMount,
             #reisPlannerMount,
             #salesMount { grid-column: 1 / -1; }
+            .dashboard-layout { display: flex; flex-direction: column; gap: 1rem; }
             .dashboard-summary { display: flex; flex-direction: column; gap: .85rem; }
-            .dashboard-active-day { display: flex; align-items: center; gap: .75rem; padding: .85rem 1rem; border-radius: 1rem; border: 1px solid rgba(0,0,0,.05); background: #fff; box-shadow: 0 8px 18px rgba(0,0,0,.08); font-weight: 800; color: #143814; text-align: left; width: 100%; }
-            button.dashboard-active-day { cursor: pointer; border: none; font: inherit; }
-            button.dashboard-active-day:focus-visible { outline: 3px solid rgba(42,150,38,.3); outline-offset: 2px; }
-            .dashboard-active-day__icon { font-size: 1.5rem; }
-            .dashboard-active-day__meta { display: block; font-size: .78rem; font-weight: 700; color: #53645c; }
-            .dashboard-active-day__cta { margin-left: auto; font-size: .78rem; font-weight: 800; color: #2A9626; }
-            .dashboard-active-day--empty { border-style: dashed; background: rgba(255,255,255,.65); box-shadow: none; color: #52635b; cursor: default; }
-            .dashboard-active-day--empty .dashboard-active-day__cta { display: none; }
-            .dashboard-summary-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-            .dashboard-summary-card { background: #fff; border-radius: 1rem; padding: .9rem 1rem; box-shadow: 0 8px 18px rgba(0,0,0,.08); border: 1px solid rgba(0,0,0,.04); display: flex; flex-direction: column; gap: .4rem; }
+            .dashboard-summary-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+            .dashboard-summary-grid--compact { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+            .dashboard-summary-card { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: 0 8px 18px rgba(0,0,0,.08); border: 1px solid rgba(0,0,0,.04); display: flex; flex-direction: column; gap: .45rem; }
             .dashboard-summary-card--accent { background: rgba(255,197,0,.18); border-color: rgba(255,197,0,.4); }
             .dashboard-summary-card__label { font-size: .78rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #5b6a62; }
             .dashboard-summary-card__value { font-size: 1.4rem; font-weight: 900; color: #143814; }
             .dashboard-summary-card__value--positive { color: #1F6D1C; }
             .dashboard-summary-card__value--negative { color: #C62828; }
             .dashboard-summary-card__meta { font-size: .78rem; font-weight: 700; color: #53645c; }
+            .dashboard-summary-card__cta { margin-top: .2rem; align-self: flex-start; border: none; border-radius: .8rem; padding: .45rem .85rem; font-weight: 800; font-size: .86rem; background: #2A9626; color: #fff; cursor: pointer; }
+            .dashboard-summary-card__cta:focus-visible { outline: 3px solid rgba(42,150,38,.3); outline-offset: 2px; }
             .dashboard-action-card, .dashboard-highlights { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: 0 10px 20px rgba(0,0,0,.08); border: 1px solid rgba(0,0,0,.04); display: flex; flex-direction: column; gap: .75rem; }
             .dashboard-card-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
             .dashboard-card-head h2 { margin: 0; font-weight: 900; color: #194a1f; font-size: 1.05rem; }
@@ -5188,6 +5167,11 @@ function injectCoreStylesOnce() {
             .dashboard-highlight-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
             .dashboard-highlight-actions .btn-secondary { border-radius: .8rem; font-weight: 800; }
             #salesMount { display: flex; flex-direction: column; gap: .8rem; }
+            .dashboard-more { background: #fff; border-radius: 1rem; border: 1px solid rgba(0,0,0,.04); box-shadow: 0 8px 18px rgba(0,0,0,.08); overflow: hidden; }
+            .dashboard-more__toggle { width: 100%; border: none; display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .9rem 1rem; font-weight: 900; font-size: .98rem; background: linear-gradient(90deg, rgba(255,197,0,.16), rgba(42,150,38,.16)); cursor: pointer; }
+            .dashboard-more__toggle--open .dashboard-more__chevron { transform: rotate(180deg); }
+            .dashboard-more__chevron { transition: transform .15s ease; }
+            .dashboard-more__content { padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
 
             /* Daginfo hero */
             .dayinfo-hero { display: flex; flex-direction: column; gap: 1rem; background: linear-gradient(145deg, rgba(42,150,38,.18) 0%, rgba(255,197,0,.18) 100%); border: 1px solid rgba(20,65,25,.08); }
@@ -5216,7 +5200,7 @@ function injectCoreStylesOnce() {
             .dayinfo-mix__qty { font-size: 1rem; font-weight: 800; color: #123f16; }
 
             @media (min-width: 1024px) {
-                .dashboard-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                .dashboard-layout { max-width: 1200px; margin: 0 auto; }
             }
 
             /* Goal Progress */
@@ -5271,7 +5255,7 @@ function injectCoreStylesOnce() {
             .dashboard-event-card__title { display: flex; flex-direction: column; gap: .25rem; }
             .dashboard-event-card__title h3 { margin: 0; font-weight: 900; font-size: 1.05rem; color: #143814; }
             .dashboard-event-card__meta { display: flex; flex-wrap: wrap; gap: .35rem; font-weight: 700; color: #35513a; font-size: .85rem; }
-            .dashboard-event-card__metrics { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); padding: .65rem .75rem; border-radius: .85rem; background: rgba(25,74,31,.05); }
+            .dashboard-event-card__metrics { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); padding: .65rem .75rem; border-radius: .85rem; background: rgba(25,74,31,.05); }
             .dashboard-event-card__metric { display: flex; flex-direction: column; gap: .2rem; }
             .dashboard-event-card__metric-label { font-size: .75rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #5b6a62; }
             .dashboard-event-card__metric-value { font-size: 1.05rem; font-weight: 900; color: #143814; }
@@ -5312,14 +5296,8 @@ function injectCoreStylesOnce() {
             .supplement-list-head span { font-size: .72rem; color: #65716c; font-weight: 600; }
             .supplement-list-values { display: flex; flex-wrap: wrap; gap: .6rem; font-size: .78rem; color: #35513a; }
             .supplement-list-values b { font-weight: 800; color: #1F6D1C; }
-            .event-card-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-            .event-card-btn { border: none; border-radius: .8rem; padding: .6rem 1rem; font-weight: 800; cursor: pointer; transition: transform .15s ease, box-shadow .15s ease; }
-            .event-card-btn:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; transform: none; }
-            .event-card-btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(0,0,0,.1); }
-            .event-card-btn.primary { background: #2A9626; color: #fff; }
-            .event-card-btn.secondary { background: #FFE36A; color: #5a4700; }
-            .event-card-btn.danger { background: #C62828; color: #fff; }
-            .event-card-btn.ghost { background: #fff; border: 1px solid rgba(0,0,0,.1); color: #194a1f; }
+            .dashboard-event-card__cta { border: none; border-radius: .8rem; padding: .6rem 1rem; font-weight: 900; font-size: .95rem; background: #2A9626; color: #fff; cursor: pointer; }
+            .dashboard-event-card__cta:focus-visible { outline: 3px solid rgba(42,150,38,.28); outline-offset: 2px; }
             .event-empty-card { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: inset 0 0 0 1px rgba(0,0,0,.05); font-style: italic; color: #65716c; text-align: center; }
             .event-modal { max-width: 520px; }
             .event-modal-sub { margin: .25rem 0 .6rem; font-weight: 700; color: #1F6D1C; }
