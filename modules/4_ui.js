@@ -4,6 +4,7 @@
 import { store } from './store.js';
 import { apiFetch } from './api.js';
 import { addVerkoopMutatie, getEventOmzet } from './3_data.js';
+import { buildCashflowProjection } from './19_cashflow.js';
 import { resolveBusId } from './voorraad_utils.js';
 
 // ============ Globale UI Helpers ============
@@ -545,7 +546,7 @@ function buildBottomNavItems() {
         { action: 'voorraad', icon: '📦', label: 'Voorraad' },
         { action: 'events', icon: '🎪', label: 'Events' },
         { action: 'reis', icon: '🧾', label: 'Paklijsten' },
-        { action: 'accounting', icon: '📒', label: 'Boekhouding' },
+        { action: 'accounting', icon: '📒', label: 'Cashflow' },
         { action: 'inzichten', icon: '📈', label: 'Inzichten' },
         { action: 'settings', icon: '⚙️', label: 'Instellingen' }
     ];
@@ -890,7 +891,7 @@ function renderActionButtonsRow(event) {
 }
 
 function renderDashboardLayer2(plannedEvents) {
-    const summary = getDebCredSummary();
+    const projection = buildCashflowProjection({ months: 1, scenarioEventRevenue: dashboardState.scenarioEventRevenue });
     const balanceValue = dashboardState.liveBalanceEUR;
     const sliderSection = renderPlannedEventsSliders(plannedEvents);
 
@@ -909,11 +910,11 @@ function renderDashboardLayer2(plannedEvents) {
                 <div class="dashboard-arap">
                     <button type="button" class="dashboard-arap__item" data-dashboard-debiteurs>
                         <span class="dashboard-arap__label">Te ontvangen</span>
-                        <strong>${escapeHtml(formatCurrencyValue(summary.debtorTotal, 'EUR'))}</strong>
+                        <strong>${escapeHtml(formatCurrencyValue(projection.totals.openReceivableEUR || 0, 'EUR'))}</strong>
                     </button>
                     <button type="button" class="dashboard-arap__item" data-dashboard-crediteuren>
                         <span class="dashboard-arap__label">Te betalen</span>
-                        <strong>${escapeHtml(formatCurrencyValue(summary.creditorTotal, 'EUR'))}</strong>
+                        <strong>${escapeHtml(formatCurrencyValue(projection.totals.openPayableEUR || 0, 'EUR'))}</strong>
                     </button>
                 </div>
             </article>
@@ -1504,43 +1505,20 @@ function updateDashboardForecast() {
 }
 
 function buildDashboardForecast() {
-    const months = buildForecastMonths();
-    if (!months.length) return null;
-    const { debiteuren, crediteuren } = getDebCredSummary();
-    const plannedEvents = buildPlannedEvents(Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : []);
-    const baselineDeltas = buildForecastDeltas(months, debiteuren, crediteuren);
-    const scenarioDeltas = { ...baselineDeltas };
-
-    plannedEvents.forEach((event) => {
-        const ref = getEventRef(event);
-        const defaults = getScenarioDefaultsForEvent(event);
-        const gross = Number.isFinite(dashboardState.scenarioEventRevenue[ref])
-            ? dashboardState.scenarioEventRevenue[ref]
-            : defaults.defaultValue;
-        if (!gross) return;
-        const startDate = parseLocalYMD(getEventStartDate(event));
-        if (!startDate) return;
-        const monthKey = toMonthKey(startDate);
-        if (!(monthKey in scenarioDeltas)) return;
-        scenarioDeltas[monthKey] += computeScenarioNet(event, gross);
-    });
-
     const startBalance = parseEuroInput(dashboardState.liveBalanceEUR);
     const hasBalanceInput = Boolean(dashboardState.liveBalanceEUR && Number.isFinite(startBalance));
-    const baseline = [];
-    const scenario = [];
-    let runningBase = startBalance || 0;
-    let runningScenario = startBalance || 0;
-
-    months.forEach(({ key }) => {
-        runningBase += baselineDeltas[key] || 0;
-        runningScenario += scenarioDeltas[key] || 0;
-        baseline.push(roundCurrency(runningBase));
-        scenario.push(roundCurrency(runningScenario));
+    const projection = buildCashflowProjection({
+        months: 4,
+        balanceEUR: hasBalanceInput ? startBalance : 0,
+        scenarioEventRevenue: dashboardState.scenarioEventRevenue
     });
+    if (!projection?.months?.length) return null;
+
+    const baseline = projection.months.map((month) => month.baselineBalanceEUR);
+    const scenario = projection.months.map((month) => month.scenarioBalanceEUR);
 
     return {
-        labels: months.map(month => month.label),
+        labels: projection.months.map((month) => formatMonthLabel(month.monthISO)),
         baseline,
         scenario,
         endBaseline: baseline[baseline.length - 1] || 0,
@@ -1549,39 +1527,14 @@ function buildDashboardForecast() {
     };
 }
 
-function buildForecastMonths() {
-    const months = [];
-    const start = new Date();
-    const base = new Date(start.getFullYear(), start.getMonth(), 1);
-    for (let i = 0; i < 4; i += 1) {
-        const date = new Date(base.getFullYear(), base.getMonth() + i, 1);
-        const label = date.toLocaleDateString('nl-NL', { month: 'short', year: '2-digit' });
-        months.push({ key: toMonthKey(date), label });
-    }
-    return months;
+function formatMonthLabel(monthISO) {
+    const parsed = new Date(`${monthISO}-01`);
+    if (!Number.isFinite(parsed.getTime())) return monthISO;
+    return parsed.toLocaleDateString('nl-NL', { month: 'short', year: '2-digit' });
 }
 
 function toMonthKey(date) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-}
-
-function buildForecastDeltas(months, debiteuren, crediteuren) {
-    const delta = {};
-    months.forEach(({ key }) => { delta[key] = 0; });
-    const fallbackMonth = months[0]?.key;
-    debiteuren.forEach((entry) => {
-        const amount = resolveDebCredBalance(entry);
-        if (!amount) return;
-        const monthKey = resolveDebCredDueMonth(entry, fallbackMonth);
-        if (monthKey in delta) delta[monthKey] += amount;
-    });
-    crediteuren.forEach((entry) => {
-        const amount = resolveDebCredBalance(entry);
-        if (!amount) return;
-        const monthKey = resolveDebCredDueMonth(entry, fallbackMonth);
-        if (monthKey in delta) delta[monthKey] -= amount;
-    });
-    return delta;
 }
 
 function parseEuroInput(value) {

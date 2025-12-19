@@ -247,7 +247,7 @@ export function openInzichtenModal() {
       <button class="tab active" data-tab="overzicht">Overzicht</button>
       <button class="tab" data-tab="producten">Producten</button>
       <button class="tab" data-tab="tijd">Tijd</button>
-      <button class="tab" data-tab="boekhouding">Boekhouding</button>
+      <button class="tab" data-tab="boekhouding">Cashflow</button>
       <button class="tab" data-tab="vooruitzicht">Vooruitzicht</button>
     </div>
 
@@ -405,7 +405,7 @@ function buildInlineInsightsMarkup(events, state) {
     <header class="insights-inline__header">
       <div>
         <h2>📈 Inzichten</h2>
-        <p class="muted">Mobiele samenvatting van omzet, mix en boekhouding.</p>
+        <p class="muted">Mobiele samenvatting van omzet, mix en cashflow.</p>
       </div>
       <button type="button" class="btn-secondary" data-role="open-modal">Volledige analyse</button>
     </header>
@@ -437,7 +437,7 @@ function buildInlineInsightsMarkup(events, state) {
       </section>
       <section class="insights-inline__card" data-role="ledger">
         <header>
-          <h3>Boekhouding</h3>
+          <h3>Cashflow</h3>
           <span class="insights-inline__card-meta" data-role="ledger-meta"></span>
         </header>
         <ul class="insights-inline__list" data-role="ledger-list"></ul>
