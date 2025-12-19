@@ -444,28 +444,18 @@ function normalizeRevenueEntries(event) {
   [...(Array.isArray(fromEvent) ? fromEvent : []), ...(Array.isArray(fromStore) ? fromStore : [])]
     .forEach(entry => entries.push(entry));
 
-  const seen = new Map();
-  entries.forEach(entry => {
+  return entries.map(entry => {
     const date = normalizeOmzetDate(entry.dateISO || entry.date || entry.datum || entry.dagDatum || entry.dag);
-    const eur = toSafeNumber(entry.eur ?? entry.prijs_eur ?? entry.amountEUR ?? entry.bedragEUR);
-    const usd = toSafeNumber(entry.usd ?? entry.prijs_usd ?? entry.amountUSD ?? entry.bedragUSD);
-    const debtor = resolveEntryDebtorFlag(entry);
-    const note = entry.note || entry.comment || '';
-    const id = entry.id || entry.entryId || '';
-    const key = id || [date || 'onbekend', eur, usd, debtor ? '1' : '0', note].join('|');
-    if (seen.has(key)) return;
-    seen.set(key, {
-      id: id || `${date || 'onbekend'}-${Math.random().toString(36).slice(2)}`,
+    return {
+      id: entry.id || entry.entryId || `${date || 'onbekend'}-${Math.random().toString(36).slice(2)}`,
       date,
       dateLabel: formatOmzetDate(date),
-      eur,
-      usd,
-      debtor,
-      note
-    });
-  });
-
-  return Array.from(seen.values()).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+      eur: toSafeNumber(entry.eur ?? entry.prijs_eur ?? entry.amountEUR ?? entry.bedragEUR),
+      usd: toSafeNumber(entry.usd ?? entry.prijs_usd ?? entry.amountUSD ?? entry.bedragUSD),
+      debtor: resolveEntryDebtorFlag(entry),
+      note: entry.note || entry.comment || ''
+    };
+  }).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 }
 
 function normalizeCostEntries(event) {
@@ -957,3 +947,4 @@ window.openEventDetails = window.openEventDetails || openEventDetail;
 window.toonEventDetails = window.toonEventDetails || openEventDetail;
 window.showEventDetailsModal = window.showEventDetailsModal || openEventDetail;
 window.renderEventDetails = window.renderEventDetails || ((eventRef) => openEventDetail(eventRef));
+
