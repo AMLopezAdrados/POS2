@@ -5,6 +5,7 @@ import { toonVoorraadModal } from './6_beheerVoorraad.js';
 import { upgradeGebruikersData } from './11_gebruikersbeheer.js';
 import { store } from './store.js';
 import { apiFetch } from './api.js';
+import { loadFinanceData, normalizeFinanceData } from './19_cashflow.js';
 
 const LEDGER_CATEGORY_EVENT_INCOME = 'cat-event-income';
 const LEDGER_CATEGORY_EVENT_EXPENSE = 'cat-event-expense';
@@ -55,6 +56,7 @@ export const db = {
     accounts: [],
     pendingQueue: []
   },
+  finance: normalizeFinanceData(loadFinanceData()),
   settings: { ...DEFAULT_SETTINGS },
   debCrediteuren: {
     debiteuren: [],
@@ -1413,10 +1415,12 @@ export async function loadData(retries = 3, delayMs = 5000) {
     db.accounting    = normalizeAccountingData(accountingData);
     persistAccountingPendingQueue(db.accounting.pendingQueue);
     db.settings      = normalizeSettingsData(settingsData);
+    db.finance       = normalizeFinanceData(loadFinanceData());
     if (store?.state?.db) {
       store.state.db.producten = db.producten;
       store.state.db.accounting = db.accounting;
       store.state.db.settings = db.settings;
+      store.state.db.finance = db.finance;
     }
     store.emit?.('accounting:loaded', db.accounting);
 
