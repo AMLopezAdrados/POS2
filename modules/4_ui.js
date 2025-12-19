@@ -3142,13 +3142,13 @@ function openEventInsights(eventId) {
     navigationActionHandler('inzichten');
 }
 
-function openDagomzetModal(eventId, dateISO) {
+export function openDagomzetModal(eventId, dateISO) {
     const event = findEventByRef(eventId);
     if (event) setActiveDayFromEvent(event, dateISO);
     navigationActionHandler('dagomzet');
 }
 
-function openKostenModal(eventId) {
+export function openKostenModal(eventId) {
     if (!eventId) return;
     import('./9_eventdetails.js')
         .then((mod) => mod?.openEventDetail?.(eventId, { initialTab: 'kosten', autoOpenCostModal: true }))

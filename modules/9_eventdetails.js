@@ -7,7 +7,13 @@ import {
   recordExtraCostLedgerEntry,
   deleteExtraCostLedgerEntry
 } from './3_data.js';
-import { showAlert, showLoading, hideLoading } from './4_ui.js';
+import {
+  showAlert,
+  showLoading,
+  hideLoading,
+  openDagomzetModal,
+  openKostenModal
+} from './4_ui.js';
 
 export async function openEventDetail(eventRef, options = {}) {
   const opts = typeof options === 'string' ? { initialTab: options } : (options || {});
@@ -444,18 +450,31 @@ function normalizeRevenueEntries(event) {
   [...(Array.isArray(fromEvent) ? fromEvent : []), ...(Array.isArray(fromStore) ? fromStore : [])]
     .forEach(entry => entries.push(entry));
 
-  return entries.map(entry => {
+  const seen = new Set();
+  const normalized = entries.map(entry => {
     const date = normalizeOmzetDate(entry.dateISO || entry.date || entry.datum || entry.dagDatum || entry.dag);
+    const eur = toSafeNumber(entry.eur ?? entry.prijs_eur ?? entry.amountEUR ?? entry.bedragEUR);
+    const usd = toSafeNumber(entry.usd ?? entry.prijs_usd ?? entry.amountUSD ?? entry.bedragUSD);
+    const debtor = resolveEntryDebtorFlag(entry);
+    const note = entry.note || entry.comment || '';
+    const id = entry.id || entry.entryId || entry._id || null;
+    const dedupeKey = id
+      ? `id:${id}`
+      : `val:${date || 'onbekend'}|${eur}|${usd}|${debtor ? 1 : 0}|${note}`;
+    if (seen.has(dedupeKey)) return null;
+    seen.add(dedupeKey);
     return {
-      id: entry.id || entry.entryId || `${date || 'onbekend'}-${Math.random().toString(36).slice(2)}`,
+      id: id || `${date || 'onbekend'}-${Math.random().toString(36).slice(2)}`,
       date,
       dateLabel: formatOmzetDate(date),
-      eur: toSafeNumber(entry.eur ?? entry.prijs_eur ?? entry.amountEUR ?? entry.bedragEUR),
-      usd: toSafeNumber(entry.usd ?? entry.prijs_usd ?? entry.amountUSD ?? entry.bedragUSD),
-      debtor: resolveEntryDebtorFlag(entry),
-      note: entry.note || entry.comment || ''
+      eur,
+      usd,
+      debtor,
+      note
     };
-  }).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  }).filter(Boolean);
+
+  return normalized.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 }
 
 function normalizeCostEntries(event) {
@@ -679,6 +698,10 @@ function callFinalizeEvent(event) {
 
 function callAddRevenue(event, date) {
   const id = event?.id || event?.naam || event?.name;
+  if (typeof openDagomzetModal === 'function') {
+    openDagomzetModal(id, date ? toYMDString(date) : undefined);
+    return;
+  }
   const candidates = ['openDagomzetModal', 'showDagomzetInvoer', 'openOmzetModal'];
   for (const fnName of candidates) {
     if (typeof window[fnName] === 'function') {
@@ -691,6 +714,10 @@ function callAddRevenue(event, date) {
 
 function callAddCost(event) {
   const id = event?.id || event?.naam || event?.name;
+  if (typeof openKostenModal === 'function') {
+    openKostenModal(id);
+    return;
+  }
   const candidates = ['toonKostenToevoegen', 'openKostenModal', 'openCostModal'];
   for (const fnName of candidates) {
     if (typeof window[fnName] === 'function') {
@@ -947,4 +974,3 @@ window.openEventDetails = window.openEventDetails || openEventDetail;
 window.toonEventDetails = window.toonEventDetails || openEventDetail;
 window.showEventDetailsModal = window.showEventDetailsModal || openEventDetail;
 window.renderEventDetails = window.renderEventDetails || ((eventRef) => openEventDetail(eventRef));
-
