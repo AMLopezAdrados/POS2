@@ -3,7 +3,8 @@
 // Centrale store als enige state bron
 import { store } from './store.js';
 import { apiFetch } from './api.js';
-import { addVerkoopMutatie } from './3_data.js';
+import { addVerkoopMutatie, getEventOmzet } from './3_data.js';
+import { resolveBusId } from './voorraad_utils.js';
 
 // ============ Globale UI Helpers ============
 
@@ -85,11 +86,10 @@ export async function showMainShell() {
         <header id=\"appTopbar\"></header>
         <main id=\"mainContent\" class=\"app-main\">
             <section id=\"panel-dashboard\" class=\"app-panel app-panel-active\">
-                <div class=\"dashboard-layout\">
-                    <div id=\"dashboardSummaryMount\"></div>
-                    <div id=\"dashboardActionMount\"></div>
-                    <div id=\"dashboardHighlightsMount\"></div>
-                    <div id=\"dashboardEventsMount\"></div>
+                <div class=\"dashboard-layout dashboard-v2\">
+                    <section id=\"dashboardLayer1\" class=\"dashboard-layer\"></section>
+                    <section id=\"dashboardLayer2\" class=\"dashboard-layer\"></section>
+                    <section id=\"dashboardLayer3\" class=\"dashboard-layer\"></section>
                     <section id=\"dashboardMoreSection\" class=\"dashboard-more\">
                         <button type=\"button\" class=\"dashboard-more__toggle\" data-more-toggle>
                             <span class=\"dashboard-more__label\">Meer inzichten</span>
@@ -637,12 +637,21 @@ function ensureEventDeckListeners() {
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const dashboardState = {
+    selectedEventId: null,
+    liveBalanceEUR: '',
+    scenarioEventRevenue: {},
+    scenarioDefaults: {},
+    salesMixRange: 'today',
+    forecastChart: null,
+    forecastTimer: null
+};
 
 function renderEventCards() {
-    const summaryMount = document.getElementById('dashboardSummaryMount');
-    const actionMount = document.getElementById('dashboardActionMount');
-    const eventsMount = document.getElementById('dashboardEventsMount');
-    const highlightsMount = document.getElementById('dashboardHighlightsMount');
+    const layer1 = document.getElementById('dashboardLayer1');
+    const layer2 = document.getElementById('dashboardLayer2');
+    const layer3 = document.getElementById('dashboardLayer3');
+    if (!layer1 || !layer2 || !layer3) return;
 
     const events = Array.isArray(store.state.db?.evenementen)
         ? store.state.db.evenementen
@@ -651,83 +660,1000 @@ function renderEventCards() {
     renderGoalProgressCards(events);
 
     if (!events.length) {
-        if (summaryMount) summaryMount.innerHTML = renderDashboardSummaryEmpty();
-        if (actionMount) actionMount.innerHTML = renderDashboardActionEmpty();
-        if (eventsMount) eventsMount.innerHTML = `<div class="event-empty-card">Geen evenementen gevonden.</div>`;
-        if (highlightsMount) highlightsMount.innerHTML = '';
+        layer1.innerHTML = renderDashboardEmptyState();
+        layer2.innerHTML = '';
+        layer3.innerHTML = '';
+        resetDashboardForecastChart();
         return;
     }
 
-    const current = [];
-    const upcoming = [];
+    const todayEvents = buildTodayEvents(events);
+    const plannedEvents = buildPlannedEvents(events);
+    const selectedEvent = resolveDashboardSelectedEvent(events, todayEvents);
+
+    layer1.innerHTML = renderDashboardLayer1(todayEvents, selectedEvent);
+    layer2.innerHTML = renderDashboardLayer2(plannedEvents);
+    layer3.innerHTML = renderDashboardLayer3(selectedEvent);
+
+    bindDashboardLayer1(layer1, todayEvents, selectedEvent);
+    bindDashboardLayer2(layer2, plannedEvents);
+    bindDashboardLayer3(layer3, selectedEvent);
+
+    resetDashboardForecastChart();
+    updateDashboardForecast();
+}
+
+function renderDashboardEmptyState() {
+    return `
+        <section class="dashboard-empty-card">
+            <h2>Dashboard</h2>
+            <p>Geen evenementen gevonden. Voeg een event toe om te starten.</p>
+        </section>
+    `;
+}
+
+function buildTodayEvents(events) {
     const today = startOfLocalDay(new Date());
-    const upcomingLimit = startOfLocalDay(addDays(new Date(), 7));
     const todayMs = today.getTime();
-    const upcomingLimitMs = upcomingLimit.getTime();
+    const list = [];
 
-    for (const ev of events) {
-        if (!ev || isEventCompleted(ev)) continue;
-
+    events.forEach((ev) => {
+        if (!ev || isEventCompleted(ev)) return;
         const startDate = parseLocalYMD(getEventStartDate(ev));
         const endDate = parseLocalYMD(getEventEndDate(ev));
         const startMs = startDate ? startOfLocalDay(startDate).getTime() : null;
         const endMs = endDate ? startOfLocalDay(endDate).getTime() : null;
-
         const activeByDate = (
             (startMs != null && endMs != null && startMs <= todayMs && todayMs <= endMs) ||
             (startMs != null && endMs == null && startMs <= todayMs) ||
             (startMs == null && endMs != null && todayMs <= endMs)
         );
+        const hasOpenSession = Array.isArray(ev?.sessions || ev?.sessies)
+            ? (ev.sessions || ev.sessies).some(session => String(session?.status || session?.state || '').toLowerCase() === 'open')
+            : false;
 
-        const metrics = computeEventFinancials(ev);
-        const entry = {
-            event: ev,
-            metrics,
-            startDate,
-            endDate,
-            startMs,
-            endMs,
-            ref: String(ev?.id || ev?.naam || '').trim()
-        };
-
-        if (startMs != null) {
-            entry.daysUntilStart = Math.ceil((startMs - todayMs) / MS_PER_DAY);
+        if (isEventActive(ev) || activeByDate || hasOpenSession) {
+            list.push({
+                event: ev,
+                ref: getEventRef(ev),
+                startMs,
+                endMs
+            });
         }
-        if (endMs != null) {
-            entry.daysUntilEnd = Math.ceil((endMs - todayMs) / MS_PER_DAY);
+    });
+
+    list.sort((a, b) => sortByEventDate(a.event, b.event));
+    return list;
+}
+
+function buildPlannedEvents(events) {
+    const today = startOfLocalDay(new Date());
+    const todayMs = today.getTime();
+    const list = [];
+    events.forEach((ev) => {
+        if (!ev || isEventCompleted(ev)) return;
+        const startDate = parseLocalYMD(getEventStartDate(ev));
+        const startMs = startDate ? startOfLocalDay(startDate).getTime() : null;
+        const status = String(ev?.state || ev?.status || '').toLowerCase();
+        const isPlanned = status === 'planned' || status === 'gepland';
+        if ((startMs != null && startMs > todayMs) || isPlanned) {
+            list.push(ev);
         }
+    });
+    list.sort((a, b) => sortByEventDate(a, b));
+    return list;
+}
 
-        if (isEventActive(ev) || activeByDate) {
-            current.push(entry);
-            continue;
+function resolveDashboardSelectedEvent(events, todayEvents) {
+    const selectedRef = dashboardState.selectedEventId;
+    if (selectedRef) {
+        const hit = events.find(ev => getEventRef(ev) === selectedRef);
+        if (hit) return hit;
+    }
+    const fallback = todayEvents[0]?.event || events[0] || null;
+    dashboardState.selectedEventId = fallback ? getEventRef(fallback) : null;
+    return fallback;
+}
+
+function getEventRef(event) {
+    if (!event) return '';
+    return String(event.id || event.naam || event.uuid || event.slug || '').trim();
+}
+
+function renderDashboardLayer1(todayEvents, selectedEvent) {
+    const todayLabel = formatFullDate(toYMDString(new Date()));
+    const eventsStrip = renderTodayEventsStrip(todayEvents, getEventRef(selectedEvent));
+    const targetCard = renderTargetMeterCard(selectedEvent);
+    const actionCard = renderActionButtonsRow(selectedEvent);
+
+    return `
+        <div class="dashboard-layer__header">
+            <div>
+                <p class="dashboard-layer__eyebrow">Vandaag</p>
+                <h2 class="dashboard-layer__title">Actieve events</h2>
+            </div>
+            <span class="dashboard-layer__meta">${escapeHtml(todayLabel || '')}</span>
+        </div>
+        ${eventsStrip}
+        <div class="dashboard-layer-grid dashboard-layer-grid--two">
+            ${targetCard}
+            ${actionCard}
+        </div>
+    `;
+}
+
+function renderTodayEventsStrip(todayEvents, selectedRef) {
+    if (!todayEvents.length) {
+        return `<div class="dashboard-empty-note">Geen actieve events voor vandaag.</div>`;
+    }
+
+    const chips = todayEvents.map(({ event, ref }) => {
+        const name = formatEventChipTitle(event);
+        const meta = formatEventPeriod(event);
+        const omzetDone = hasTodayOmzet(event);
+        const kostenDone = hasEventCosts(event);
+        const omzetBadge = omzetDone ? 'Omzet OK' : 'Omzet ontbreekt';
+        const kostenBadge = kostenDone ? 'Kosten OK' : 'Kosten?';
+        const badgeClass = omzetDone ? 'ok' : 'warn';
+        const isSelected = selectedRef && selectedRef === ref;
+        return `
+            <button type="button" class="dashboard-event-chip${isSelected ? ' is-selected' : ''}" data-dashboard-event="${escapeHtml(ref)}">
+                <span class="dashboard-event-chip__title">${escapeHtml(name)}</span>
+                <span class="dashboard-event-chip__meta">${escapeHtml(meta || '')}</span>
+                <span class="dashboard-event-chip__badges">
+                    <span class="dashboard-chip-badge ${badgeClass}">${escapeHtml(omzetBadge)}</span>
+                    <span class="dashboard-chip-badge ${kostenDone ? 'ok' : 'warn'}">${escapeHtml(kostenBadge)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+
+    return `
+        <div class="dashboard-today-strip" role="list">
+            ${chips}
+        </div>
+    `;
+}
+
+function formatEventChipTitle(event) {
+    const locatie = event?.locatie || event?.naam || 'Onbekend';
+    const type = event?.type ? `(${event.type})` : '';
+    return `${locatie} ${type}`.trim();
+}
+
+function renderTargetMeterCard(event) {
+    if (!event) {
+        return `
+            <article class="dashboard-card dashboard-card--target">
+                <h3>Doelstelling</h3>
+                <p class="dashboard-card__meta">Selecteer een event om voortgang te zien.</p>
+            </article>
+        `;
+    }
+
+    const realized = getEventRevenueEUR(event);
+    const target = getEventTargetEUR(event);
+    const progress = target > 0 ? Math.min(100, Math.round((realized / target) * 100)) : 0;
+    const remaining = Math.max(0, target - realized);
+    const hasTarget = target > 0;
+
+    return `
+        <article class="dashboard-card dashboard-card--target" data-dashboard-action="target" role="button" tabindex="0">
+            <div class="dashboard-card__head">
+                <h3>Doelstelling</h3>
+                <span class="dashboard-card__meta">${escapeHtml(event?.naam || '')}</span>
+            </div>
+            ${hasTarget ? `
+                <div class="dashboard-progress">
+                    <div class="dashboard-progress__bar">
+                        <div class="dashboard-progress__fill" style="width:${progress}%"></div>
+                    </div>
+                    <div class="dashboard-progress__labels">
+                        <span>${escapeHtml(formatCurrencyValue(realized, 'EUR'))}</span>
+                        <span>${escapeHtml(formatCurrencyValue(target, 'EUR'))}</span>
+                    </div>
+                    <div class="dashboard-progress__meta">Nog ${escapeHtml(formatCurrencyValue(remaining, 'EUR'))}</div>
+                </div>
+            ` : `
+                <p class="dashboard-card__meta">Geen doel ingesteld voor dit event.</p>
+            `}
+        </article>
+    `;
+}
+
+function renderActionButtonsRow(event) {
+    if (!event) {
+        return `
+            <article class="dashboard-card dashboard-card--actions">
+                <h3>Acties</h3>
+                <p class="dashboard-card__meta">Kies eerst een actief event.</p>
+            </article>
+        `;
+    }
+
+    const omzetDone = hasTodayOmzet(event);
+    const omzetLabel = omzetDone ? 'Dagomzet ✓' : 'Dagomzet invoeren';
+    const omzetClass = omzetDone ? 'secondary' : 'primary';
+
+    return `
+        <article class="dashboard-card dashboard-card--actions">
+            <div class="dashboard-card__head">
+                <h3>Dagomzet & Kosten</h3>
+                <span class="dashboard-card__meta">${escapeHtml(event?.naam || '')}</span>
+            </div>
+            <div class="dashboard-action-row">
+                <button type="button" class="dashboard-btn ${omzetClass}" data-dashboard-omzet="${escapeHtml(getEventRef(event))}">${escapeHtml(omzetLabel)}</button>
+                <button type="button" class="dashboard-btn ghost" data-dashboard-kosten="${escapeHtml(getEventRef(event))}">Kosten</button>
+            </div>
+        </article>
+    `;
+}
+
+function renderDashboardLayer2(plannedEvents) {
+    const summary = getDebCredSummary();
+    const balanceValue = dashboardState.liveBalanceEUR;
+    const sliderSection = renderPlannedEventsSliders(plannedEvents);
+
+    return `
+        <div class="dashboard-layer__header">
+            <div>
+                <p class="dashboard-layer__eyebrow">Finance</p>
+                <h2 class="dashboard-layer__title">Overzicht & vooruitzicht</h2>
+            </div>
+        </div>
+        <div class="dashboard-layer-grid dashboard-layer-grid--two">
+            <article class="dashboard-card dashboard-card--clickable" data-dashboard-action="arap" role="button" tabindex="0">
+                <div class="dashboard-card__head">
+                    <h3>Debiteuren & Crediteuren</h3>
+                </div>
+                <div class="dashboard-arap">
+                    <button type="button" class="dashboard-arap__item" data-dashboard-debiteurs>
+                        <span class="dashboard-arap__label">Te ontvangen</span>
+                        <strong>${escapeHtml(formatCurrencyValue(summary.debtorTotal, 'EUR'))}</strong>
+                    </button>
+                    <button type="button" class="dashboard-arap__item" data-dashboard-crediteuren>
+                        <span class="dashboard-arap__label">Te betalen</span>
+                        <strong>${escapeHtml(formatCurrencyValue(summary.creditorTotal, 'EUR'))}</strong>
+                    </button>
+                </div>
+            </article>
+            <article class="dashboard-card">
+                <div class="dashboard-card__head">
+                    <h3>Huidig saldo</h3>
+                    <span class="dashboard-card__meta">Niet opgeslagen</span>
+                </div>
+                <input type="text" class="dashboard-input" inputmode="decimal" placeholder="Huidig saldo (wordt niet opgeslagen)" value="${escapeHtml(balanceValue)}" data-live-balance>
+            </article>
+        </div>
+        <article class="dashboard-card dashboard-forecast" data-dashboard-action="forecast" role="button" tabindex="0">
+            <div class="dashboard-card__head">
+                <h3>3-maanden vooruitzicht</h3>
+                <span class="dashboard-card__meta">Baseline vs scenario</span>
+            </div>
+            <div class="dashboard-forecast__chart">
+                <canvas id="dashboardForecastChart" height="160"></canvas>
+            </div>
+            <div class="dashboard-forecast__summary">
+                <span data-forecast-end></span>
+                <span data-forecast-baseline></span>
+                <span class="dashboard-forecast__hint" data-forecast-hint></span>
+            </div>
+            ${sliderSection}
+        </article>
+    `;
+}
+
+function renderPlannedEventsSliders(plannedEvents) {
+    const events = plannedEvents.slice(0, 10);
+    const rows = events.map((event) => renderPlannedEventSlider(event)).join('');
+    const hasRows = Boolean(rows);
+    const emptyNote = hasRows ? '' : '<p class="dashboard-empty-note">Geen geplande events voor scenario’s.</p>';
+
+    return `
+        <div class="dashboard-forecast-sliders">
+            <button type="button" class="dashboard-toggle" data-forecast-toggle>
+                <span>Wat-als (geplande events)</span>
+                <span class="dashboard-toggle__chevron" aria-hidden="true">▼</span>
+            </button>
+            <div class="dashboard-forecast-sliders__panel" hidden>
+                ${rows}
+                ${emptyNote}
+                <div class="dashboard-slider-actions">
+                    <button type="button" class="dashboard-btn ghost" data-scenario-reset-all>Reset scenario</button>
+                    <button type="button" class="dashboard-btn secondary" data-scenario-neutral>Neutraal</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderPlannedEventSlider(event) {
+    const ref = getEventRef(event);
+    const defaults = getScenarioDefaultsForEvent(event);
+    const value = Number.isFinite(dashboardState.scenarioEventRevenue[ref])
+        ? dashboardState.scenarioEventRevenue[ref]
+        : defaults.defaultValue;
+    const net = computeScenarioNet(event, value);
+    const meta = formatEventPeriod(event);
+    return `
+        <div class="dashboard-slider" data-scenario-event="${escapeHtml(ref)}">
+            <div class="dashboard-slider__head">
+                <div>
+                    <p class="dashboard-slider__title">${escapeHtml(formatEventChipTitle(event))}</p>
+                    <p class="dashboard-slider__meta">${escapeHtml(meta || '')}</p>
+                    <p class="dashboard-slider__sub">Commissie: ${escapeHtml(defaults.commissionLabel)} | Netto: <span data-scenario-net="${escapeHtml(ref)}">${escapeHtml(formatCurrencyValue(net, 'EUR'))}</span></p>
+                </div>
+                <button type="button" class="dashboard-icon-btn" data-scenario-reset="${escapeHtml(ref)}" aria-label="Reset">↺</button>
+            </div>
+            <input type="range" min="0" max="${defaults.max}" step="${defaults.step}" value="${value}" data-scenario-slider="${escapeHtml(ref)}">
+            <div class="dashboard-slider__values">
+                <span data-scenario-value="${escapeHtml(ref)}">${escapeHtml(formatCurrencyValue(value, 'EUR'))}</span>
+                <span class="muted">Max ${escapeHtml(formatCurrencyValue(defaults.max, 'EUR'))}</span>
+            </div>
+        </div>
+    `;
+}
+
+function renderDashboardLayer3(selectedEvent) {
+    const inventory = getInventoryRiskSummary();
+    const salesMix = getSalesMixSummary(selectedEvent, dashboardState.salesMixRange);
+
+    return `
+        <div class="dashboard-layer__header">
+            <div>
+                <p class="dashboard-layer__eyebrow">Operatie</p>
+                <h2 class="dashboard-layer__title">Voorraad & verkoopmix</h2>
+            </div>
+        </div>
+        <div class="dashboard-layer-grid dashboard-layer-grid--two">
+            <article class="dashboard-card dashboard-card--clickable" data-dashboard-action="inventory" role="button" tabindex="0">
+                <div class="dashboard-card__head">
+                    <h3>Voorraad risico’s</h3>
+                    <span class="dashboard-card__meta">${escapeHtml(inventory.busLabel)}</span>
+                </div>
+                ${inventory.items.length ? `
+                    <div class="dashboard-risk-summary">
+                        <strong>${inventory.count} producten onder minimum</strong>
+                        <ul>
+                            ${inventory.items.map(item => `<li>${escapeHtml(item.label)} <span>${escapeHtml(item.qty)}</span></li>`).join('')}
+                        </ul>
+                    </div>
+                ` : `<p class="dashboard-card__meta">Geen risico’s gesignaleerd.</p>`}
+            </article>
+            <article class="dashboard-card dashboard-card--clickable" data-dashboard-action="salesmix" role="button" tabindex="0">
+                <div class="dashboard-card__head">
+                    <h3>Verkoopmix</h3>
+                    <div class="dashboard-segment" role="tablist">
+                        <button type="button" class="dashboard-segment__btn${dashboardState.salesMixRange === 'today' ? ' active' : ''}" data-sales-mix-range="today">Vandaag</button>
+                        <button type="button" class="dashboard-segment__btn${dashboardState.salesMixRange === 'event' ? ' active' : ''}" data-sales-mix-range="event">Hele event</button>
+                    </div>
+                </div>
+                ${salesMix.items.length ? `
+                    <div class="dashboard-mix-list">
+                        ${salesMix.items.map(item => `
+                            <div class="dashboard-mix-item">
+                                <span>${escapeHtml(item.label)}</span>
+                                <span>${escapeHtml(item.pctLabel)}</span>
+                                <div class="dashboard-mix-bar">
+                                    <div class="dashboard-mix-bar__fill" style="width:${item.pct}%"></div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : `<p class="dashboard-card__meta">Nog geen verkoopmix beschikbaar.</p>`}
+            </article>
+        </div>
+    `;
+}
+
+function bindDashboardLayer1(layer1, todayEvents, selectedEvent) {
+    layer1.querySelectorAll('[data-dashboard-event]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const ref = btn.dataset.dashboardEvent;
+            const event = findEventByRef(ref);
+            if (event) {
+                dashboardState.selectedEventId = ref;
+                renderEventCards();
+                openEventDetails(ref);
+            }
+        });
+    });
+
+    const targetCard = layer1.querySelector('[data-dashboard-action="target"]');
+    if (targetCard) {
+        targetCard.addEventListener('click', () => {
+            if (!selectedEvent) return;
+            openEventInsights(getEventRef(selectedEvent));
+        });
+    }
+
+    layer1.querySelectorAll('[data-dashboard-omzet]').forEach((btn) => {
+        btn.addEventListener('click', () => openDagomzetModal(btn.dataset.dashboardOmzet, toYMDString(new Date())));
+    });
+    layer1.querySelectorAll('[data-dashboard-kosten]').forEach((btn) => {
+        btn.addEventListener('click', () => openKostenModal(btn.dataset.dashboardKosten));
+    });
+}
+
+function bindDashboardLayer2(layer2, plannedEvents) {
+    const balanceInput = layer2.querySelector('[data-live-balance]');
+    if (balanceInput) {
+        balanceInput.addEventListener('input', () => {
+            dashboardState.liveBalanceEUR = balanceInput.value;
+            scheduleDashboardForecastUpdate();
+        });
+    }
+
+    layer2.querySelectorAll('[data-dashboard-debiteurs]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openDebiteurenScreen();
+        });
+    });
+    layer2.querySelectorAll('[data-dashboard-crediteuren]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            openCrediteurenScreen();
+        });
+    });
+
+    const toggle = layer2.querySelector('[data-forecast-toggle]');
+    const panel = layer2.querySelector('.dashboard-forecast-sliders__panel');
+    if (toggle && panel) {
+        toggle.addEventListener('click', () => {
+            const isHidden = panel.hasAttribute('hidden');
+            panel.toggleAttribute('hidden', !isHidden);
+            toggle.classList.toggle('is-open', isHidden);
+        });
+    }
+
+    const plannedMap = new Map(plannedEvents.map(event => [getEventRef(event), event]));
+    layer2.querySelectorAll('[data-scenario-slider]').forEach((input) => {
+        input.addEventListener('input', () => {
+            const ref = input.dataset.scenarioSlider;
+            dashboardState.scenarioEventRevenue[ref] = Number(input.value) || 0;
+            updateScenarioSliderUI(layer2, plannedMap, ref);
+            scheduleDashboardForecastUpdate();
+        });
+    });
+
+    layer2.querySelectorAll('[data-scenario-reset]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const ref = btn.dataset.scenarioReset;
+            const targetEvent = plannedMap.get(ref);
+            if (!targetEvent) return;
+            const defaults = getScenarioDefaultsForEvent(targetEvent);
+            dashboardState.scenarioEventRevenue[ref] = defaults.defaultValue;
+            const input = layer2.querySelector(`[data-scenario-slider="${CSS.escape(ref)}"]`);
+            if (input) input.value = defaults.defaultValue;
+            updateScenarioSliderUI(layer2, plannedMap, ref);
+            scheduleDashboardForecastUpdate();
+        });
+    });
+
+    const resetAll = layer2.querySelector('[data-scenario-reset-all]');
+    if (resetAll) {
+        resetAll.addEventListener('click', (event) => {
+            event.stopPropagation();
+            plannedMap.forEach((ev, ref) => {
+                const defaults = getScenarioDefaultsForEvent(ev);
+                dashboardState.scenarioEventRevenue[ref] = defaults.defaultValue;
+                const input = layer2.querySelector(`[data-scenario-slider="${CSS.escape(ref)}"]`);
+                if (input) input.value = defaults.defaultValue;
+                updateScenarioSliderUI(layer2, plannedMap, ref);
+            });
+            scheduleDashboardForecastUpdate();
+        });
+    }
+
+    const neutral = layer2.querySelector('[data-scenario-neutral]');
+    if (neutral) {
+        neutral.addEventListener('click', (event) => {
+            event.stopPropagation();
+            plannedMap.forEach((_, ref) => {
+                dashboardState.scenarioEventRevenue[ref] = 0;
+                const input = layer2.querySelector(`[data-scenario-slider="${CSS.escape(ref)}"]`);
+                if (input) input.value = 0;
+                updateScenarioSliderUI(layer2, plannedMap, ref);
+            });
+            scheduleDashboardForecastUpdate();
+        });
+    }
+
+    const forecastCard = layer2.querySelector('[data-dashboard-action="forecast"]');
+    if (forecastCard) {
+        forecastCard.addEventListener('click', (event) => {
+            if (shouldIgnoreCardClick(event)) return;
+            openPlanningForecastScreen();
+        });
+    }
+}
+
+function bindDashboardLayer3(layer3, selectedEvent) {
+    const inventoryCard = layer3.querySelector('[data-dashboard-action="inventory"]');
+    if (inventoryCard) {
+        inventoryCard.addEventListener('click', (event) => {
+            if (shouldIgnoreCardClick(event)) return;
+            openVoorraadBeheer();
+        });
+    }
+
+    const salesMixCard = layer3.querySelector('[data-dashboard-action="salesmix"]');
+    if (salesMixCard) {
+        salesMixCard.addEventListener('click', (event) => {
+            if (shouldIgnoreCardClick(event)) return;
+            if (!selectedEvent) return;
+            openEventSalesMixDetails(getEventRef(selectedEvent));
+        });
+    }
+
+    layer3.querySelectorAll('[data-sales-mix-range]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const range = btn.dataset.salesMixRange;
+            if (range === 'today' || range === 'event') {
+                dashboardState.salesMixRange = range;
+                renderEventCards();
+            }
+        });
+    });
+}
+
+function shouldIgnoreCardClick(event) {
+    const target = event.target;
+    return target.closest('button, input, select, textarea, label');
+}
+
+function updateScenarioSliderUI(layer2, plannedMap, ref) {
+    const event = plannedMap.get(ref);
+    if (!event) return;
+    const value = Number(dashboardState.scenarioEventRevenue[ref]) || 0;
+    const net = computeScenarioNet(event, value);
+    const valueNode = layer2.querySelector(`[data-scenario-value="${CSS.escape(ref)}"]`);
+    const netNode = layer2.querySelector(`[data-scenario-net="${CSS.escape(ref)}"]`);
+    if (valueNode) valueNode.textContent = formatCurrencyValue(value, 'EUR');
+    if (netNode) netNode.textContent = formatCurrencyValue(net, 'EUR');
+}
+
+function hasTodayOmzet(event) {
+    if (!event) return false;
+    const today = toYMDString(new Date());
+    const entries = collectEventOmzetEntries(event);
+    return entries.some((entry) => {
+        const entryDate = normalizeOmzetEntryDate(entry);
+        if (entryDate !== today) return false;
+        const amount = toSafeNumber(entry?.eur ?? entry?.usd ?? entry?.amount ?? entry?.bedrag);
+        return amount > 0 || entry != null;
+    });
+}
+
+function collectEventOmzetEntries(event) {
+    if (!event) return [];
+    const eventId = getEventRef(event);
+    const list = eventId ? getEventOmzet(eventId) : [];
+    if (list.length) return list;
+    if (Array.isArray(event?.omzet)) return event.omzet;
+    if (Array.isArray(event?.omzet?.entries)) return event.omzet.entries;
+    return [];
+}
+
+function normalizeOmzetEntryDate(entry) {
+    const raw = entry?.datum || entry?.date || entry?.day || entry?.timestamp;
+    if (!raw) return '';
+    if (raw instanceof Date) return toYMDString(raw);
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        const candidate = trimmed.slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return candidate;
+        const parsed = new Date(trimmed);
+        if (Number.isFinite(parsed.getTime())) return toYMDString(parsed);
+    }
+    if (typeof raw === 'number') {
+        const parsed = new Date(raw);
+        if (Number.isFinite(parsed.getTime())) return toYMDString(parsed);
+    }
+    return '';
+}
+
+function hasEventCosts(event) {
+    if (!event) return false;
+    const costs = event?.kosten || {};
+    const extra = Array.isArray(costs.extra) ? costs.extra : [];
+    if (extra.length) return true;
+    const values = Object.values(costs).filter(value => !Array.isArray(value));
+    return values.some(value => toSafeNumber(value) > 0);
+}
+
+function getEventRevenueEUR(event) {
+    if (!event) return 0;
+    const { exchangeRate } = determineEventCurrency(event);
+    const totals = calculateOmzetTotals(event, 'EUR', exchangeRate);
+    return totals.revenueEUR || totals.revenueTarget || 0;
+}
+
+function getEventTargetEUR(event) {
+    if (!event) return 0;
+    const planning = event?.planning || {};
+    const expected = planning.expectedTurnover || {};
+    const targetEUR = pickFirstPositive([
+        expected?.eur,
+        expected?.EUR,
+        expected?.amountEUR,
+        planning?.expectedTurnoverEUR,
+        planning?.expectedRevenueEUR,
+        planning?.expectedRevenue,
+        planning?.turnoverEstimate,
+        planning?.turnoverEstimateEUR,
+        event?.expectedTurnoverEUR,
+        event?.expectedRevenueEUR,
+        event?.expectedRevenue,
+        event?.verwachteOmzetEUR,
+        event?.verwachteOmzet
+    ]);
+    if (targetEUR > 0) return targetEUR;
+    const targetUSD = pickFirstPositive([
+        expected?.usd,
+        expected?.USD,
+        expected?.amountUSD,
+        planning?.expectedTurnoverUSD,
+        planning?.expectedRevenueUSD,
+        planning?.turnoverEstimateUSD,
+        event?.expectedTurnoverUSD,
+        event?.expectedRevenueUSD
+    ]);
+    if (targetUSD > 0) {
+        const { exchangeRate } = determineEventCurrency(event);
+        return exchangeRate && exchangeRate > 0 ? targetUSD * exchangeRate : targetUSD;
+    }
+    return 0;
+}
+
+function getDebCredSummary() {
+    const data = store.state.db?.debCrediteuren || { debiteuren: [], crediteuren: [] };
+    const debiteuren = Array.isArray(data.debiteuren) ? data.debiteuren : [];
+    const crediteuren = Array.isArray(data.crediteuren) ? data.crediteuren : [];
+    const debtorTotal = debiteuren.reduce((sum, entry) => sum + Math.max(0, resolveDebCredBalance(entry)), 0);
+    const creditorTotal = crediteuren.reduce((sum, entry) => sum + Math.max(0, resolveDebCredBalance(entry)), 0);
+    return { debtorTotal, creditorTotal, debiteuren, crediteuren };
+}
+
+function resolveDebCredBalance(entry) {
+    const candidates = [
+        entry?.openstaand,
+        entry?.saldo,
+        entry?.amount,
+        entry?.bedrag,
+        entry?.raw?.openstaand,
+        entry?.raw?.saldo,
+        entry?.raw?.amount,
+        entry?.raw?.bedrag
+    ];
+    for (const candidate of candidates) {
+        if (typeof candidate === 'string') {
+            const normalized = candidate.replace(',', '.').replace(/[^0-9.-]/g, '');
+            const num = Number(normalized);
+            if (Number.isFinite(num)) return num;
+        } else {
+            const num = Number(candidate);
+            if (Number.isFinite(num)) return num;
         }
+    }
+    return 0;
+}
 
-        if (startMs != null && startMs > todayMs && startMs <= upcomingLimitMs) {
-            upcoming.push(entry);
+function resolveDebCredDueMonth(entry, fallbackMonth) {
+    const candidates = [
+        entry?.dueDate,
+        entry?.vervaldatum,
+        entry?.datum,
+        entry?.date,
+        entry?.raw?.dueDate,
+        entry?.raw?.vervaldatum,
+        entry?.raw?.datum,
+        entry?.raw?.date
+    ];
+    for (const candidate of candidates) {
+        const parsed = new Date(candidate);
+        if (Number.isFinite(parsed.getTime())) {
+            return toMonthKey(parsed);
         }
     }
+    return fallbackMonth;
+}
 
-    current.sort((a, b) => sortByEventDate(a.event, b.event));
-    upcoming.sort((a, b) => sortByEventDate(a.event, b.event));
+function getScenarioDefaultsForEvent(event) {
+    const ref = getEventRef(event);
+    if (dashboardState.scenarioDefaults[ref]) return dashboardState.scenarioDefaults[ref];
+    const targetEUR = getEventTargetEUR(event);
+    const defaultValue = roundCurrency(targetEUR > 0 ? targetEUR * 0.8 : 0);
+    const max = Math.max(targetEUR || 0, defaultValue * 1.2 || 0, 5000);
+    const step = max >= 10000 ? 1000 : 500;
+    const commissionPct = normalizeCommissionPct(event?.commissie);
+    const commissionLabel = `${Math.round(commissionPct * 100)}%`;
+    const config = {
+        defaultValue,
+        max: Math.round(max),
+        step,
+        commissionLabel
+    };
+    dashboardState.scenarioDefaults[ref] = config;
+    return config;
+}
 
-    const aggregate = aggregateCurrentEventFinancials(current);
-    const tasks = buildDashboardTasks(current, upcoming);
+function normalizeCommissionPct(value) {
+    const pct = toSafeNumber(value);
+    if (!Number.isFinite(pct)) return 0;
+    return pct > 1 ? pct / 100 : pct;
+}
 
-    if (summaryMount) {
-        summaryMount.innerHTML = renderDashboardSummary(aggregate, current.length, upcoming.length, tasks);
-        bindDashboardSummaryActions(summaryMount);
+function computeScenarioNet(event, gross) {
+    const commissionPct = normalizeCommissionPct(event?.commissie);
+    const productCostPct = 0.3;
+    const net = gross * (1 - commissionPct - productCostPct);
+    return roundCurrency(net);
+}
+
+function scheduleDashboardForecastUpdate() {
+    if (dashboardState.forecastTimer) clearTimeout(dashboardState.forecastTimer);
+    dashboardState.forecastTimer = setTimeout(() => {
+        updateDashboardForecast();
+    }, 150);
+}
+
+function resetDashboardForecastChart() {
+    if (dashboardState.forecastChart?.destroy) {
+        try {
+            dashboardState.forecastChart.destroy();
+        } catch (err) {
+            console.debug('[Dashboard] Forecast chart cleanup mislukt', err);
+        }
     }
-    if (actionMount) {
-        actionMount.innerHTML = renderDashboardActionCenter(tasks);
-        bindDashboardActionEvents(actionMount);
+    dashboardState.forecastChart = null;
+}
+
+function updateDashboardForecast() {
+    const layer2 = document.getElementById('dashboardLayer2');
+    if (!layer2) return;
+    const forecast = buildDashboardForecast();
+    const endLabel = layer2.querySelector('[data-forecast-end]');
+    const baselineLabel = layer2.querySelector('[data-forecast-baseline]');
+    const hintLabel = layer2.querySelector('[data-forecast-hint]');
+    if (endLabel) {
+        endLabel.textContent = forecast
+            ? `Scenario eindigt over 3 maanden rond: ${formatCurrencyValue(forecast.endScenario, 'EUR')}`
+            : '';
     }
-    if (eventsMount) {
-        renderDashboardEventDeck(eventsMount, current, upcoming);
+    if (baselineLabel) {
+        baselineLabel.textContent = forecast
+            ? `Baseline: ${formatCurrencyValue(forecast.endBaseline, 'EUR')}`
+            : '';
     }
-    if (highlightsMount) {
-        highlightsMount.innerHTML = renderDashboardHighlights(current, upcoming, aggregate);
-        bindDashboardHighlightEvents(highlightsMount);
+    if (hintLabel) {
+        hintLabel.textContent = forecast?.hasBalanceInput
+            ? ''
+            : 'Vul saldo in voor betere prognose';
     }
+
+    const canvas = layer2.querySelector('#dashboardForecastChart');
+    if (!canvas) return;
+    if (typeof Chart !== 'function') {
+        if (hintLabel && !hintLabel.textContent) {
+            hintLabel.textContent = 'Grafiek niet beschikbaar.';
+        }
+        return;
+    }
+
+    const data = {
+        labels: forecast.labels,
+        datasets: [
+            {
+                label: 'Baseline',
+                data: forecast.baseline,
+                borderColor: '#8aa29b',
+                backgroundColor: 'rgba(138,162,155,.12)',
+                tension: 0.35,
+                fill: true
+            },
+            {
+                label: 'Scenario',
+                data: forecast.scenario,
+                borderColor: '#2A9626',
+                backgroundColor: 'rgba(42,150,38,.18)',
+                tension: 0.35,
+                fill: true
+            }
+        ]
+    };
+
+    if (!dashboardState.forecastChart) {
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        dashboardState.forecastChart = new Chart(context, {
+            type: 'line',
+            data,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: (tooltipItem) => {
+                                const value = tooltipItem.parsed?.y ?? 0;
+                                return `${tooltipItem.dataset.label}: ${formatCurrencyValue(value, 'EUR')}`;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { display: false } },
+                    y: {
+                        ticks: {
+                            callback: (value) => formatCurrencyValue(value, 'EUR')
+                        }
+                    }
+                }
+            }
+        });
+    } else {
+        dashboardState.forecastChart.data.labels = data.labels;
+        dashboardState.forecastChart.data.datasets = data.datasets;
+        dashboardState.forecastChart.update();
+    }
+}
+
+function buildDashboardForecast() {
+    const months = buildForecastMonths();
+    if (!months.length) return null;
+    const { debiteuren, crediteuren } = getDebCredSummary();
+    const plannedEvents = buildPlannedEvents(Array.isArray(store.state.db?.evenementen) ? store.state.db.evenementen : []);
+    const baselineDeltas = buildForecastDeltas(months, debiteuren, crediteuren);
+    const scenarioDeltas = { ...baselineDeltas };
+
+    plannedEvents.forEach((event) => {
+        const ref = getEventRef(event);
+        const defaults = getScenarioDefaultsForEvent(event);
+        const gross = Number.isFinite(dashboardState.scenarioEventRevenue[ref])
+            ? dashboardState.scenarioEventRevenue[ref]
+            : defaults.defaultValue;
+        if (!gross) return;
+        const startDate = parseLocalYMD(getEventStartDate(event));
+        if (!startDate) return;
+        const monthKey = toMonthKey(startDate);
+        if (!(monthKey in scenarioDeltas)) return;
+        scenarioDeltas[monthKey] += computeScenarioNet(event, gross);
+    });
+
+    const startBalance = parseEuroInput(dashboardState.liveBalanceEUR);
+    const hasBalanceInput = Boolean(dashboardState.liveBalanceEUR && Number.isFinite(startBalance));
+    const baseline = [];
+    const scenario = [];
+    let runningBase = startBalance || 0;
+    let runningScenario = startBalance || 0;
+
+    months.forEach(({ key }) => {
+        runningBase += baselineDeltas[key] || 0;
+        runningScenario += scenarioDeltas[key] || 0;
+        baseline.push(roundCurrency(runningBase));
+        scenario.push(roundCurrency(runningScenario));
+    });
+
+    return {
+        labels: months.map(month => month.label),
+        baseline,
+        scenario,
+        endBaseline: baseline[baseline.length - 1] || 0,
+        endScenario: scenario[scenario.length - 1] || 0,
+        hasBalanceInput
+    };
+}
+
+function buildForecastMonths() {
+    const months = [];
+    const start = new Date();
+    const base = new Date(start.getFullYear(), start.getMonth(), 1);
+    for (let i = 0; i < 4; i += 1) {
+        const date = new Date(base.getFullYear(), base.getMonth() + i, 1);
+        const label = date.toLocaleDateString('nl-NL', { month: 'short', year: '2-digit' });
+        months.push({ key: toMonthKey(date), label });
+    }
+    return months;
+}
+
+function toMonthKey(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function buildForecastDeltas(months, debiteuren, crediteuren) {
+    const delta = {};
+    months.forEach(({ key }) => { delta[key] = 0; });
+    const fallbackMonth = months[0]?.key;
+    debiteuren.forEach((entry) => {
+        const amount = resolveDebCredBalance(entry);
+        if (!amount) return;
+        const monthKey = resolveDebCredDueMonth(entry, fallbackMonth);
+        if (monthKey in delta) delta[monthKey] += amount;
+    });
+    crediteuren.forEach((entry) => {
+        const amount = resolveDebCredBalance(entry);
+        if (!amount) return;
+        const monthKey = resolveDebCredDueMonth(entry, fallbackMonth);
+        if (monthKey in delta) delta[monthKey] -= amount;
+    });
+    return delta;
+}
+
+function parseEuroInput(value) {
+    if (value == null) return 0;
+    const normalized = String(value).replace(/\s/g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
+    const num = Number(normalized);
+    return Number.isFinite(num) ? num : 0;
+}
+
+function getInventoryRiskSummary() {
+    const voorraad = store.state.db?.voorraad || {};
+    const busId = resolveBusId();
+    const busKey = busId && voorraad && Object.prototype.hasOwnProperty.call(voorraad, busId)
+        ? busId
+        : Object.keys(voorraad)[0] || '';
+    const bucket = busKey ? voorraad[busKey] || {} : {};
+    const products = Array.isArray(store.state.db?.producten) ? store.state.db.producten : [];
+    const productMap = new Map(products.map(product => [product.naam, product]));
+    const defaultThreshold = 5;
+    const risks = Object.entries(bucket)
+        .map(([name, qty]) => {
+            const product = productMap.get(name) || {};
+            const threshold = Number(product.minimum ?? product.min ?? product.minVoorraad ?? defaultThreshold);
+            return { label: name, qty: Number(qty) || 0, threshold };
+        })
+        .filter(item => Number.isFinite(item.threshold) && item.qty <= item.threshold);
+    risks.sort((a, b) => a.qty - b.qty);
+    return {
+        busLabel: busKey ? `Bus: ${busKey}` : 'Voorraad',
+        count: risks.length,
+        items: risks.slice(0, 3).map(item => ({ label: item.label, qty: `${item.qty}` }))
+    };
+}
+
+function getSalesMixSummary(event, range) {
+    if (!event) return { items: [] };
+    const snapshot = buildCheeseSalesSnapshot(event);
+    if (!snapshot.ready) return { items: [] };
+    const entries = [];
+    let total = 0;
+    const products = snapshot.products && Object.keys(snapshot.products).length
+        ? snapshot.products
+        : null;
+    if (products) {
+        Object.entries(products).forEach(([name, qty]) => {
+            const value = clampCheeseValue(toSafeNumber(qty));
+            if (!value) return;
+            total += value;
+            entries.push({ label: name, qty: value });
+        });
+    } else {
+        Object.entries(snapshot.categories || {}).forEach(([name, qty]) => {
+            const value = clampCheeseValue(toSafeNumber(qty));
+            if (!value) return;
+            total += value;
+            entries.push({ label: name, qty: value });
+        });
+    }
+
+    if (!total) return { items: [] };
+    entries.sort((a, b) => b.qty - a.qty);
+    return {
+        items: entries.slice(0, 3).map((entry) => {
+            const pct = Math.round((entry.qty / total) * 100);
+            return {
+                label: entry.label,
+                pct,
+                pctLabel: `${pct}%`
+            };
+        }),
+        range
+    };
 }
 
 function renderDashboardSummaryEmpty() {
@@ -2214,12 +3140,12 @@ function sumEventExtraCosts(ev) {
     return total;
 }
 
-function buildDashboardActiveDaySnapshot(event) {
+function buildDashboardActiveDaySnapshot(event, dateOverride = null) {
     if (!event) return null;
     const start = getEventStartDate(event);
     const end = getEventEndDate(event) || start;
     const today = toYMDString(new Date());
-    let date = today;
+    let date = dateOverride || today;
     if (start && today < start) {
         date = start;
     } else if (end && today > end) {
@@ -2250,14 +3176,68 @@ function buildDashboardActiveDaySnapshot(event) {
     };
 }
 
-function setActiveDayFromEvent(event) {
-    const snapshot = buildDashboardActiveDaySnapshot(event);
+function setActiveDayFromEvent(event, dateOverride = null) {
+    const snapshot = buildDashboardActiveDaySnapshot(event, dateOverride);
     if (!snapshot) return;
     try {
         store.setActiveEventDay?.(snapshot);
     } catch (err) {
         console.warn('[POS] Active day bijwerken mislukt', err);
     }
+}
+
+function openEventDetails(eventId) {
+    if (!eventId) return;
+    import('./9_eventdetails.js')
+        .then((mod) => mod?.openEventDetail?.(eventId))
+        .catch((err) => {
+            console.error('[Dashboard] Eventdetails openen mislukt', err);
+            showAlert('Eventdetails konden niet worden geopend.', 'error');
+        });
+}
+
+function openEventInsights(eventId) {
+    const event = findEventByRef(eventId);
+    if (event) setActiveDayFromEvent(event);
+    navigationActionHandler('inzichten');
+}
+
+function openDagomzetModal(eventId, dateISO) {
+    const event = findEventByRef(eventId);
+    if (event) setActiveDayFromEvent(event, dateISO);
+    navigationActionHandler('dagomzet');
+}
+
+function openKostenModal(eventId) {
+    if (!eventId) return;
+    import('./9_eventdetails.js')
+        .then((mod) => mod?.openEventDetail?.(eventId, { initialTab: 'kosten', autoOpenCostModal: true }))
+        .catch((err) => {
+            console.error('[Dashboard] Kosten openen mislukt', err);
+            showAlert('Kostenformulier kon niet worden geopend.', 'error');
+        });
+}
+
+function openDebiteurenScreen() {
+    navigationActionHandler('accounting');
+}
+
+function openCrediteurenScreen() {
+    navigationActionHandler('accounting');
+}
+
+function openPlanningForecastScreen() {
+    navigationActionHandler('reis');
+}
+
+function openVoorraadBeheer() {
+    navigationActionHandler('voorraad');
+}
+
+function openEventSalesMixDetails(eventId) {
+    const event = findEventByRef(eventId);
+    if (event) setActiveDayFromEvent(event);
+    navigationActionHandler('inzichten');
 }
 
 function openEventActionModal(ref) {
@@ -5172,6 +6152,81 @@ function injectCoreStylesOnce() {
             .dashboard-more__toggle--open .dashboard-more__chevron { transform: rotate(180deg); }
             .dashboard-more__chevron { transition: transform .15s ease; }
             .dashboard-more__content { padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
+            .dashboard-v2 { gap: 1.2rem; }
+            .dashboard-layer { display: flex; flex-direction: column; gap: .85rem; }
+            .dashboard-layer__header { display: flex; justify-content: space-between; align-items: flex-end; gap: .6rem; flex-wrap: wrap; }
+            .dashboard-layer__eyebrow { margin: 0; font-size: .7rem; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: #5b6a62; }
+            .dashboard-layer__title { margin: 0; font-size: 1.15rem; font-weight: 900; color: #194a1f; }
+            .dashboard-layer__meta { font-size: .8rem; font-weight: 700; color: #65716c; }
+            .dashboard-layer-grid { display: grid; gap: .8rem; grid-template-columns: minmax(0, 1fr); }
+            .dashboard-layer-grid--two { grid-template-columns: minmax(0, 1fr); }
+            .dashboard-card { background: #fff; border-radius: 1rem; padding: 1rem; box-shadow: 0 10px 20px rgba(0,0,0,.08); border: 1px solid rgba(0,0,0,.04); display: flex; flex-direction: column; gap: .6rem; }
+            .dashboard-card--clickable { cursor: pointer; transition: transform .15s ease, box-shadow .15s ease; }
+            .dashboard-card--clickable:hover { transform: translateY(-2px); box-shadow: 0 16px 24px rgba(0,0,0,.12); }
+            .dashboard-card__head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+            .dashboard-card__head h3 { margin: 0; font-weight: 900; color: #143814; font-size: 1rem; }
+            .dashboard-card__meta { font-size: .78rem; font-weight: 700; color: #65716c; }
+            .dashboard-empty-card { background: #fff; border-radius: 1rem; padding: 1.2rem; box-shadow: inset 0 0 0 1px rgba(0,0,0,.05); text-align: center; }
+            .dashboard-empty-card h2 { margin: 0 0 .3rem; font-weight: 900; color: #194a1f; }
+            .dashboard-empty-card p { margin: 0; color: #65716c; font-weight: 700; }
+            .dashboard-today-strip { display: flex; gap: .7rem; overflow-x: auto; padding-bottom: .2rem; }
+            .dashboard-today-strip::-webkit-scrollbar { display: none; }
+            .dashboard-event-chip { min-width: 170px; background: #fff; border-radius: .9rem; padding: .7rem .8rem; border: 1px solid rgba(0,0,0,.06); box-shadow: 0 6px 14px rgba(0,0,0,.08); display: flex; flex-direction: column; gap: .35rem; text-align: left; cursor: pointer; }
+            .dashboard-event-chip.is-selected { border-color: rgba(42,150,38,.55); box-shadow: 0 0 0 2px rgba(42,150,38,.18); }
+            .dashboard-event-chip__title { font-weight: 800; color: #143814; font-size: .95rem; }
+            .dashboard-event-chip__meta { font-size: .75rem; color: #5b6a62; font-weight: 600; }
+            .dashboard-event-chip__badges { display: flex; gap: .35rem; flex-wrap: wrap; }
+            .dashboard-chip-badge { font-size: .7rem; font-weight: 800; padding: .2rem .55rem; border-radius: 999px; background: rgba(255,197,0,.25); color: #805400; }
+            .dashboard-chip-badge.ok { background: rgba(42,150,38,.18); color: #1F6D1C; }
+            .dashboard-chip-badge.warn { background: rgba(255,197,0,.25); color: #805400; }
+            .dashboard-progress { display: flex; flex-direction: column; gap: .45rem; }
+            .dashboard-progress__bar { background: rgba(42,150,38,.12); border-radius: .75rem; height: .65rem; overflow: hidden; }
+            .dashboard-progress__fill { background: #2A9626; height: 100%; }
+            .dashboard-progress__labels { display: flex; justify-content: space-between; font-weight: 800; font-size: .85rem; color: #35513a; }
+            .dashboard-progress__meta { font-size: .78rem; font-weight: 700; color: #65716c; }
+            .dashboard-action-row { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+            .dashboard-btn { border: none; border-radius: .8rem; padding: .6rem .9rem; font-weight: 800; font-size: .9rem; cursor: pointer; }
+            .dashboard-btn.primary { background: #2A9626; color: #fff; }
+            .dashboard-btn.secondary { background: rgba(42,150,38,.12); color: #1F6D1C; }
+            .dashboard-btn.ghost { background: rgba(255,197,0,.2); color: #5a4800; }
+            .dashboard-input { width: 100%; border-radius: .8rem; border: 1px solid rgba(0,0,0,.12); padding: .6rem .75rem; font-weight: 700; font-size: .95rem; color: #143814; }
+            .dashboard-input:focus { outline: none; border-color: #2A9626; box-shadow: 0 0 0 3px rgba(42,150,38,.15); }
+            .dashboard-arap { display: grid; gap: .6rem; }
+            .dashboard-arap__item { border: none; border-radius: .8rem; background: rgba(25,74,31,.06); padding: .6rem .7rem; display: flex; flex-direction: column; gap: .25rem; text-align: left; cursor: pointer; }
+            .dashboard-arap__label { font-size: .75rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: #5b6a62; }
+            .dashboard-arap__item strong { font-size: 1.1rem; font-weight: 900; color: #143814; }
+            .dashboard-forecast { gap: .75rem; }
+            .dashboard-forecast__chart { width: 100%; height: 180px; }
+            .dashboard-forecast__summary { display: flex; flex-direction: column; gap: .2rem; font-weight: 800; color: #143814; }
+            .dashboard-forecast__hint { font-size: .78rem; color: #65716c; font-weight: 700; }
+            .dashboard-forecast-sliders { display: flex; flex-direction: column; gap: .6rem; }
+            .dashboard-toggle { border: none; background: rgba(255,197,0,.2); border-radius: .85rem; padding: .55rem .8rem; font-weight: 900; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+            .dashboard-toggle__chevron { transition: transform .15s ease; }
+            .dashboard-toggle.is-open .dashboard-toggle__chevron { transform: rotate(180deg); }
+            .dashboard-forecast-sliders__panel { display: flex; flex-direction: column; gap: .75rem; max-height: 320px; overflow-y: auto; padding-right: .2rem; }
+            .dashboard-slider { background: rgba(25,74,31,.05); border-radius: .85rem; padding: .7rem; display: flex; flex-direction: column; gap: .4rem; }
+            .dashboard-slider__head { display: flex; justify-content: space-between; gap: .5rem; }
+            .dashboard-slider__title { margin: 0; font-weight: 800; color: #143814; font-size: .92rem; }
+            .dashboard-slider__meta { margin: .1rem 0 0; font-size: .75rem; color: #65716c; font-weight: 700; }
+            .dashboard-slider__sub { margin: .1rem 0 0; font-size: .72rem; font-weight: 700; color: #52635b; }
+            .dashboard-slider__values { display: flex; justify-content: space-between; font-size: .78rem; font-weight: 700; color: #35513a; }
+            .dashboard-icon-btn { border: none; background: #fff; border-radius: .6rem; padding: .3rem .45rem; font-weight: 900; cursor: pointer; }
+            .dashboard-slider-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+            .dashboard-risk-summary ul { list-style: none; padding: 0; margin: .5rem 0 0; display: flex; flex-direction: column; gap: .35rem; }
+            .dashboard-risk-summary li { display: flex; justify-content: space-between; font-weight: 700; font-size: .82rem; color: #35513a; }
+            .dashboard-segment { display: inline-flex; border-radius: 999px; background: rgba(25,74,31,.08); padding: .2rem; gap: .2rem; }
+            .dashboard-segment__btn { border: none; background: transparent; padding: .25rem .6rem; border-radius: 999px; font-weight: 800; font-size: .75rem; cursor: pointer; color: #35513a; }
+            .dashboard-segment__btn.active { background: #2A9626; color: #fff; }
+            .dashboard-mix-list { display: flex; flex-direction: column; gap: .5rem; }
+            .dashboard-mix-item { display: grid; grid-template-columns: 1fr auto; gap: .35rem; font-weight: 700; font-size: .82rem; color: #35513a; }
+            .dashboard-mix-bar { grid-column: 1 / -1; height: .4rem; background: rgba(42,150,38,.12); border-radius: 999px; overflow: hidden; }
+            .dashboard-mix-bar__fill { height: 100%; background: #2A9626; }
+
+            @media (min-width: 860px) {
+                .dashboard-layer-grid--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                .dashboard-arap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+                .dashboard-forecast__summary { flex-direction: row; justify-content: space-between; }
+            }
 
             /* Daginfo hero */
             .dayinfo-hero { display: flex; flex-direction: column; gap: 1rem; background: linear-gradient(145deg, rgba(42,150,38,.18) 0%, rgba(255,197,0,.18) 100%); border: 1px solid rgba(20,65,25,.08); }
