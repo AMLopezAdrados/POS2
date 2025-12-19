@@ -2930,19 +2930,6 @@ function computeOmzetCoverage(ev) {
     };
 }
 
-function normalizeOmzetEntryDate(entry) {
-    if (!entry || typeof entry !== 'object') return null;
-    const raw = entry.date || entry.datum || entry.dagDatum || entry.dag;
-    if (!raw) return null;
-    if (raw instanceof Date) return toYMDString(raw);
-    if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) {
-        return raw.trim();
-    }
-    const parsed = new Date(raw);
-    if (!Number.isFinite(parsed.getTime())) return null;
-    return toYMDString(parsed);
-}
-
 function resolveEntryDebtorFlag(entry) {
     if (!entry || typeof entry !== 'object') return false;
     if (typeof entry.debtor === 'boolean') return entry.debtor;
