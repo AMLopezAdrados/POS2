@@ -900,7 +900,7 @@ function mountModal(titleText) {
 function ensureStyles() {
   if (document.getElementById('oc-styles')) return;
   const css = `
-  .oc-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);display:grid;place-items:center;z-index:10000}
+  .oc-overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);display:grid;place-items:center;z-index:9998}
   .oc-modal{width:min(98vw,1180px);max-height:95vh;border-radius:16px;background:#fff;box-shadow:0 10px 30px rgba(0,0,0,.25);display:flex;flex-direction:column}
   .oc-modal-head{display:flex;justify-content:space-between;align-items:center;padding:.7rem 1rem;border-bottom:1px solid #eee;position:sticky;top:0;background:#fff;z-index:2}
   .oc-close{background:#eee;border:none;border-radius:50%;width:32px;height:32px;font-weight:900;cursor:pointer}

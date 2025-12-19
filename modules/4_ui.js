@@ -54,8 +54,18 @@ export function showAlert(message, type = 'info') {
  * Geeft `overlay`, `box` en `close()` terug.
  */
 export function createModal(opts = {}) {
+    const getNextModalZIndex = () => {
+        const candidates = document.querySelectorAll('.modal-overlay, .oc-overlay, .modal');
+        let highest = 200;
+        candidates.forEach(el => {
+            const zIndex = Number.parseInt(getComputedStyle(el).zIndex, 10);
+            if (Number.isFinite(zIndex)) highest = Math.max(highest, zIndex);
+        });
+        return highest + 1;
+    };
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
+    overlay.style.zIndex = String(getNextModalZIndex());
     const box = document.createElement('div');
     box.className = 'modal-box';
     overlay.appendChild(box);
